@@ -3,6 +3,17 @@
 export type Dict = Record<string, string>
 
 export const en: Dict = {
+  'settings.engines': 'OCR and face engines',
+  'settings.ocrEngine': 'OCR engine (auto/deepseek/local)',
+  'settings.deepseekReady': 'DeepSeek key found',
+  'settings.deepseekMissing': 'no DeepSeek key',
+  'settings.ocrKeyEnv': 'DeepSeek key variable',
+  'settings.ocrLocal': 'Local PP-OCRv5 models',
+  'settings.ocrRegion': 'Default scoreboard region',
+  'settings.deepseekBaseUrl': 'DeepSeek API root',
+  'settings.faceWorker': 'Face worker (auto/rust/python)',
+  'settings.rustReady': 'Rust worker is ready',
+  'settings.rustMissing': 'Rust worker is unavailable',
   nav: 'GPU tool',
   'lang.label': 'Interface language',
   'lang.ru': 'Russian',
@@ -105,6 +116,17 @@ export const en: Dict = {
 }
 
 export const ru: Dict = {
+  'settings.engines': 'Движки OCR и лиц',
+  'settings.ocrEngine': 'OCR: движок (auto/deepseek/local)',
+  'settings.deepseekReady': 'ключ DeepSeek найден',
+  'settings.deepseekMissing': 'ключа DeepSeek нет',
+  'settings.ocrKeyEnv': 'Переменная ключа DeepSeek',
+  'settings.ocrLocal': 'Локальные модели PP-OCRv5',
+  'settings.ocrRegion': 'Область табло по умолчанию',
+  'settings.deepseekBaseUrl': 'DeepSeek API (корень)',
+  'settings.faceWorker': 'Лица: воркер (auto/rust/python)',
+  'settings.rustReady': 'Rust-воркер готов',
+  'settings.rustMissing': 'Rust-воркер недоступен',
   nav: 'GPU tool',
   'lang.label': 'Язык интерфейса',
   'lang.ru': 'Русский',

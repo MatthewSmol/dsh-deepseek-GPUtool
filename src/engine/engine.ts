@@ -39,7 +39,7 @@ import { DeepseekOcrError, runDeepseekOcr, type DeepseekOcrResult } from './deep
 import { RustFaceWorker, rustFaceAvailable } from './face-rust.js'
 import { run, stream } from './proc.js'
 
-export const VERSION = '1.2.0'
+export const VERSION = '1.2.1'
 
 /** Метаданные личности вызывающего из MCP-инструментов или HTTP-запросов. */
 export interface SubmitMeta {
@@ -227,6 +227,8 @@ export class Engine {
 
   async state(): Promise<ServerState> {
     const [gpu, doctor] = await Promise.all([this.gpu(), this.doctorReport(false)])
+    const settings = this.settingsStore.get()
+    const deepseekKey = await this.deepseekKey(settings).catch(() => '')
     return {
       version: VERSION,
       uptimeSec: Math.round((Date.now() - this.startedAt) / 1000),
@@ -239,6 +241,21 @@ export class Engine {
       leases: this.jobs.leasesList(),
       calls: this.jobs.callsList(30),
       settings: this.settingsView(),
+      // Что реально будет использовано: панель показывает это в «Настройках».
+      capabilities: {
+        ocr: {
+          engine: settings.ocrEngine,
+          deepseekKeyConfigured: Boolean(deepseekKey),
+          deepseekBaseUrl: settings.deepseekBaseUrl,
+          apiKeyEnv: settings.deepseekApiKeyEnv,
+          localModelDir: settings.ocrModelDir,
+          region: settings.ocrRegion,
+        },
+        face: {
+          mode: settings.faceWorker,
+          rust: rustFaceAvailable(settings),
+        },
+      },
     }
   }
 

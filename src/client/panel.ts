@@ -105,6 +105,10 @@ export interface SettingsView {
   uvPath: string
   modelsDir: string
   ocrModelDir: string
+  ocrEngine?: 'auto' | 'deepseek' | 'local'
+  faceWorker?: 'auto' | 'rust' | 'python'
+  deepseekBaseUrl?: string
+  deepseekApiKeyEnv?: string
   outputRoot: string
   torchIndexUrl: string
   gpuConcurrency: number
@@ -131,6 +135,10 @@ export interface StateView {
   leases: Array<{ id: string; holder: string; who: Who; devices: number[]; expiresAt: number }>
   calls: Call[]
   settings: SettingsView
+  capabilities?: {
+    ocr: { engine: 'auto' | 'deepseek' | 'local'; deepseekKeyConfigured: boolean; deepseekBaseUrl: string; apiKeyEnv: string; localModelDir: string; region: string }
+    face: { mode: 'auto' | 'rust' | 'python'; rust: { ok: boolean; binary: string; library: string | null; reason: string } }
+  }
 }
 
 function fmtDuration(ms: number | null | undefined): string {
@@ -435,7 +443,7 @@ export function createPanel(ui: Ui): (props: any) => any {
                   )
                 : null,
             ),
-            h(Progress, { job }),
+            h(Progress, { job, tr }),
           ),
         ),
       )
@@ -556,11 +564,51 @@ export function createPanel(ui: Ui): (props: any) => any {
           field('uvPath', tr('settings.uv')),
           field('modelsDir', tr('settings.models')),
           field('ocrModelDir', tr('settings.ocr')),
+          field('ocrEngine', tr('settings.ocrEngine')),
+          field('faceWorker', tr('settings.faceWorker')),
+          field('deepseekBaseUrl', tr('settings.deepseekBaseUrl')),
+          field('deepseekApiKeyEnv', tr('settings.ocrKeyEnv')),
           field('outputRoot', tr('settings.outputRoot')),
           field('torchIndexUrl', tr('settings.torchIndex')),
           field('gpuConcurrency', tr('settings.gpuConcurrency'), true),
           field('cpuConcurrency', tr('settings.cpuConcurrency'), true),
           field('httpPort', tr('settings.httpPort'), true),
+        ),
+        h('h4', null, tr('settings.engines')),
+        h(
+          'div',
+          { className: 'gputool-kv-list' },
+          h(
+            'div',
+            { className: 'gputool-kv' },
+            h('span', null, tr('settings.ocrEngine')),
+            h(
+              'span',
+              null,
+              h('code', null, state?.capabilities?.ocr.engine ?? settings.ocrEngine ?? 'auto'),
+              ' · ',
+              state?.capabilities?.ocr.deepseekKeyConfigured
+                ? h('span', { className: 'gputool-tag gputool-tag-ok' }, tr('settings.deepseekReady'))
+                : h('span', { className: 'gputool-tag gputool-tag-warn' }, tr('settings.deepseekMissing')),
+            ),
+          ),
+          h('div', { className: 'gputool-kv' }, h('span', null, tr('settings.ocrKeyEnv')), h('code', null, state?.capabilities?.ocr.apiKeyEnv ?? settings.deepseekApiKeyEnv ?? 'DEEPSEEK_API_KEY')),
+          h('div', { className: 'gputool-kv' }, h('span', null, tr('settings.ocrLocal')), h('code', null, state?.capabilities?.ocr.localModelDir ?? settings.ocrModelDir)),
+          h('div', { className: 'gputool-kv' }, h('span', null, tr('settings.ocrRegion')), h('code', null, state?.capabilities?.ocr.region || '—')),
+          h(
+            'div',
+            { className: 'gputool-kv' },
+            h('span', null, tr('settings.faceWorker')),
+            h(
+              'span',
+              null,
+              h('code', null, state?.capabilities?.face.mode ?? settings.faceWorker ?? 'auto'),
+              ' · ',
+              state?.capabilities?.face.rust.ok
+                ? h('span', { className: 'gputool-tag gputool-tag-ok' }, tr('settings.rustReady'))
+                : h('span', { className: 'gputool-tag gputool-tag-warn', title: state?.capabilities?.face.rust.reason ?? '' }, tr('settings.rustMissing')),
+            ),
+          ),
         ),
         h('p', { className: 'gputool-muted' }, tr('settings.note')),
         h('button', { type: 'button', className: 'gputool-btn gputool-btn-primary', onClick: () => void saveSettings(draft) }, tr('common.save')),
@@ -586,7 +634,7 @@ export function createPanel(ui: Ui): (props: any) => any {
           h('div', { className: 'gputool-kv' }, h('span', null, tr('jobs.who')), h('span', null, h(WhoCell, { who: job.who, tr }))),
           h('div', { className: 'gputool-kv' }, h('span', null, tr('jobs.device')), h('span', null, job.device.kind === 'gpu' ? `GPU ${job.device.index ?? 0}${job.device.name ? ` (${job.device.name})` : ''}` : tr('device.cpu'))),
           h('div', { className: 'gputool-kv' }, h('span', null, tr('history.duration')), h('span', null, fmtDuration(job.durationMs))),
-          h(Progress, { job }),
+          h(Progress, { job, tr }),
           h('h4', null, tr('jobs.argv')),
           h('pre', { className: 'gputool-pre' }, job.argv.join(' ')),
           job.outputs.length ? h('h4', null, tr('jobs.outputs')) : null,

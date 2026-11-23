@@ -192,6 +192,20 @@ export interface HintRecord {
   at: number
 }
 
+export interface OcrCapability {
+  engine: 'auto' | 'deepseek' | 'local'
+  deepseekKeyConfigured: boolean
+  deepseekBaseUrl: string
+  apiKeyEnv: string
+  localModelDir: string
+  region: string
+}
+
+export interface FaceCapability {
+  mode: 'auto' | 'rust' | 'python'
+  rust: { ok: boolean; binary: string; library: string | null; reason: string }
+}
+
 export interface ServerState {
   version: string
   uptimeSec: number
@@ -204,6 +218,7 @@ export interface ServerState {
   leases: LeaseRecord[]
   calls: CallRecord[]
   settings: Omit<Settings, 'apiToken'>
+  capabilities?: { ocr: OcrCapability; face: FaceCapability }
 }
 
 export interface JobContext {

@@ -126,6 +126,17 @@ call history.
 - Tests: +5 (response parsing, multipart against a local server, the key never
   echoed, file limits) for 17 total.
 
+### 1.2.1 — 2026-11-23
+
+- **Fixed: the Jobs tab crashed** — the progress component did not receive the
+  translator (`tr`), so any job list broke rendering.
+- **Settings show the engines**: which OCR path is selected (`auto`/`deepseek`/
+  `local`), whether the DeepSeek key is found and which variable holds it, where
+  the local PP-OCRv5 models live, the scoreboard region, the face worker mode and
+  whether the Rust worker is available.
+- `/api/state` now exposes a `capabilities` block (OCR + face) so the panel reports
+  the actual state instead of guessing.
+
 ### 1.2.0 — 2026-11-23
 
 - **Rust face worker** (`rust/face-worker`, binary `bin/gputool-face`): a persistent
