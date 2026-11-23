@@ -18,8 +18,9 @@
     "locale/*.json",
     "icon.svg",
     "cordis.patch.yml",
+    "docs",
     "README.md",
-    "docs"
+    "README.en.md"
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",

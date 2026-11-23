@@ -2,11 +2,13 @@
  * Браузерная половина плагина GPU tool.
  *
  * Регистрирует пункт в левом сайдбаре и главную панель, передавая ей функцию
- * перевода и минифицированный CSS из сборки Vite.
+ * перевода и минифицированный CSS из сборки Vite. Язык интерфейса: русский по
+ * умолчанию, английский — второй; переключатель находится в шапке панели и
+ * сохраняется в localStorage.
  */
 import css from './styles.css?inline'
-import { createPanel } from './panel.js'
-import { en, ru, zh } from './locale.js'
+import { createPanel, type Language } from './panel.js'
+import { en, ru } from './locale.js'
 
 declare global {
   interface Window {
@@ -18,6 +20,25 @@ declare global {
 
 const NS = 'gputool'
 const PANEL_ID = 'gputool'
+const LANG_KEY = 'gputool.lang'
+const DEFAULT_LANGUAGE: Language = 'ru'
+
+function storedLanguage(): Language {
+  try {
+    const value = typeof localStorage !== 'undefined' ? localStorage.getItem(LANG_KEY) : null
+    return value === 'en' || value === 'ru' ? value : DEFAULT_LANGUAGE
+  } catch {
+    return DEFAULT_LANGUAGE
+  }
+}
+
+function persistLanguage(value: Language): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(LANG_KEY, value)
+  } catch {
+    /* localStorage недоступен — остаёмся на языке по умолчанию */
+  }
+}
 
 window.__ModuleLoader__.load({
   id: '@local/dsh-gputool',
@@ -44,23 +65,28 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function fallbackText(key: string): string {
-      return en[key] ?? key
-    }
-
     function apply(ctx: any): void {
-      ctx.effect?.(() => ctx.locale.register(NS, { en, ru, zh }), 'gputool: locale dictionaries')
+      ctx.effect?.(() => ctx.locale.register(NS, { en, ru }), 'gputool: словари')
       const bound = typeof ctx.locale?.bind === 'function' ? ctx.locale.bind(NS) : null
-      const t = (key: string): string => {
+      // Русский — язык по умолчанию: сначала таблица ru, английский — запасной.
+      const tr = (lang: Language, key: string): string => {
+        const table = lang === 'en' ? en : ru
+        if (typeof table[key] === 'string') return table[key]
         try {
           const value = typeof bound === 'function' ? bound(key) : undefined
-          return typeof value === 'string' && value ? value : fallbackText(key)
+          return typeof value === 'string' && value ? value : (en[key] ?? key)
         } catch {
-          return fallbackText(key)
+          return en[key] ?? key
         }
       }
 
-      const Panel = createPanel({ React, t, css })
+      const Panel = createPanel({
+        React,
+        t: tr,
+        css,
+        language: storedLanguage,
+        onLanguageChange: persistLanguage,
+      })
 
       let layout: any = null
       try {
@@ -73,7 +99,7 @@ window.__ModuleLoader__.load({
 
       ctx.slots.inject('main', () => {
         const offPanel = ctx.slots.register(
-          { name: 'main', key: PANEL_ID, locale: NS, inject: () => ({ t }) },
+          { name: 'main', key: PANEL_ID, locale: NS, inject: () => ({ t: (key: string) => tr(storedLanguage(), key) }) },
           Panel,
         )
         return () => {
@@ -93,7 +119,7 @@ window.__ModuleLoader__.load({
             id: PANEL_ID,
             order: 40,
             locale: NS,
-            label: () => t('nav'),
+            label: () => tr(storedLanguage(), 'nav'),
           },
           Icon,
         ),

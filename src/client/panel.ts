@@ -6,10 +6,17 @@
  * модулей загрузчика DSH через `require('react')` во время выполнения.
  */
 
+export type Language = 'ru' | 'en'
+
 type Ui = {
   React: any
-  t: (key: string) => string
+  /** Перевод: язык выбирает панель (русский по умолчанию, английский — второй). */
+  t: (lang: Language, key: string) => string
   css: string
+  /** Текущий язык из localStorage панели. */
+  language: () => Language
+  /** Смена языка: запоминается для следующих открытий панели. */
+  onLanguageChange: (lang: Language) => void
 }
 
 export interface GpuInfo {
@@ -153,23 +160,21 @@ function shortSession(id: string | null): string {
 /** Создаёт компонент панели с переданными React и функцией перевода. */
 export function createPanel(ui: Ui): (props: any) => any {
   const { React, t } = ui
-  // t() вызывается в контексте модуля, а не панели — обёртка сохраняет функцию перевода.
-  const tr = (key: string): string => t(key)
   const h = React.createElement
   const useState = React.useState as <T>(initial: T) => [T, (value: T | ((previous: T) => T)) => void]
   const useEffect = React.useEffect as (effect: () => void | (() => void), deps?: unknown[]) => void
 
-  function Pill(props: { status: string }): any {
+  function Pill(props: { status: string; tr: (key: string) => string }): any {
     const key = props.status === 'succeeded' ? 'jobs.succeeded' : `jobs.${props.status}`
-    return h('span', { className: `gputool-pill gputool-pill-${props.status}` }, t(key))
+    return h('span', { className: `gputool-pill gputool-pill-${props.status}` }, props.tr(key))
   }
 
-  function Progress(props: { job: Job }): any {
+  function Progress(props: { job: Job; tr: (key: string) => string }): any {
     const progress = props.job.progress
     const percent = progress.percent
     const determinate = typeof percent === 'number' && Number.isFinite(percent)
-    const label = determinate ? `${Math.floor(percent as number)}${tr('progress.percent')}` : tr('progress.indeterminate')
-    const eta = progress.etaMs != null ? `${tr('jobs.eta')} ${fmtDuration(progress.etaMs)}` : ''
+    const label = determinate ? `${Math.floor(percent as number)}${props.tr('progress.percent')}` : props.tr('progress.indeterminate')
+    const eta = progress.etaMs != null ? `${props.tr('jobs.eta')} ${fmtDuration(progress.etaMs)}` : ''
     const counts: string[] = []
     if (progress.frame != null && progress.totalFrames != null) counts.push(`${progress.frame}/${progress.totalFrames}`)
     else if (progress.processedMs != null && progress.totalMs != null) counts.push(`${fmtDuration(progress.processedMs)} / ${fmtDuration(progress.totalMs)}`)
@@ -198,9 +203,9 @@ export function createPanel(ui: Ui): (props: any) => any {
     )
   }
 
-  function WhoCell(props: { who: Who }): any {
+  function WhoCell(props: { who: Who; tr: (key: string) => string }): any {
     const who = props.who
-    const badges = h('span', { className: `gputool-source gputool-source-${who.source}` }, tr(`source.${who.source}`))
+    const badges = h('span', { className: `gputool-source gputool-source-${who.source}` }, props.tr(`source.${who.source}`))
     if (who.sessionId) {
       return h(
         'span',
@@ -213,13 +218,13 @@ export function createPanel(ui: Ui): (props: any) => any {
     return h(
       'span',
       { className: 'gputool-who' },
-      h('span', { className: 'gputool-session' }, who.label || tr('jobs.external')),
+      h('span', { className: 'gputool-session' }, who.label || props.tr('jobs.external')),
       who.client ? h('span', { className: 'gputool-label' }, who.client) : null,
       badges,
     )
   }
 
-  function Copy(props: { value: string; label?: string }): any {
+  function Copy(props: { value: string; label?: string; tr: (key: string) => string }): any {
     const [copied, setCopied] = useState(false)
     const copy = (): void => {
       try {
@@ -230,10 +235,12 @@ export function createPanel(ui: Ui): (props: any) => any {
         /* буфер обмена недоступен */
       }
     }
-    return h('button', { type: 'button', className: 'gputool-btn gputool-btn-ghost', onClick: copy, title: props.value }, copied ? tr('common.copied') : props.label || tr('common.copy'))
+    return h('button', { type: 'button', className: 'gputool-btn gputool-btn-ghost', onClick: copy, title: props.value }, copied ? props.tr('common.copied') : props.label || props.tr('common.copy'))
   }
 
   return function Panel(_props: any): any {
+    const [language, setLanguage] = useState<Language>(ui.language())
+    const tr = (key: string): string => t(language, key)
     const [state, setState] = useState<StateView | null>(null)
     const [error, setError] = useState<string | null>(null)
     const [tab, setTab] = useState<'overview' | 'jobs' | 'history' | 'leases' | 'settings'>('overview')
@@ -378,7 +385,7 @@ export function createPanel(ui: Ui): (props: any) => any {
               { key: check.id, className: `gputool-check gputool-check-${check.level}` },
               h('span', { className: 'gputool-check-dot' }),
               h('div', { className: 'gputool-check-body' }, h('div', { className: 'gputool-check-title' }, check.title), h('div', { className: 'gputool-check-detail' }, check.detail)),
-              check.fix ? h(Copy, { value: check.fix, label: tr('common.fix') }) : h('span', { className: 'gputool-check-level' }, tr(`doctor.${check.level}`)),
+              check.fix ? h(Copy, { value: check.fix, label: tr('common.fix'), tr }) : h('span', { className: 'gputool-check-level' }, tr(`doctor.${check.level}`)),
             ),
           ),
         ),
@@ -391,8 +398,8 @@ export function createPanel(ui: Ui): (props: any) => any {
         'section',
         { className: 'gputool-card' },
         h('div', { className: 'gputool-card-head' }, h('h3', null, tr('api.title'))),
-        h('div', { className: 'gputool-kv' }, h('span', null, 'HTTP'), h('code', null, state.apiBaseUrl), h(Copy, { value: state.apiBaseUrl })),
-        h('div', { className: 'gputool-kv' }, h('span', null, tr('api.mcp')), h('code', null, state.mcpCommand), h(Copy, { value: state.mcpCommand })),
+        h('div', { className: 'gputool-kv' }, h('span', null, 'HTTP'), h('code', null, state.apiBaseUrl), h(Copy, { value: state.apiBaseUrl, tr })),
+        h('div', { className: 'gputool-kv' }, h('span', null, tr('api.mcp')), h('code', null, state.mcpCommand), h(Copy, { value: state.mcpCommand, tr })),
       )
     }
 
@@ -409,9 +416,9 @@ export function createPanel(ui: Ui): (props: any) => any {
             h(
               'div',
               { className: 'gputool-job-head' },
-              h(Pill, { status: job.status }),
+              h(Pill, { status: job.status, tr }),
               h('strong', null, `${job.kind}/${job.operation}`),
-              h(WhoCell, { who: job.who }),
+              h(WhoCell, { who: job.who, tr }),
               h('span', { className: 'gputool-muted' }, `${job.device.kind === 'gpu' ? `GPU ${job.device.index ?? 0}` : tr('device.cpu')} · ${fmtDuration(job.durationMs ?? (job.startedAt ? Date.now() - job.startedAt : null))}`),
               job.status === 'running' || job.status === 'queued'
                 ? h(
@@ -480,11 +487,11 @@ export function createPanel(ui: Ui): (props: any) => any {
                     'tr',
                     { key: row.key, className: 'gputool-row-click', onClick: () => setDetail(row.job?.id ?? null) },
                     h('td', { className: 'gputool-nowrap' }, new Date(row.at).toLocaleString()),
-                    h('td', null, row.job ? h(WhoCell, { who: row.job.who }) : row.call ? h(WhoCell, { who: row.call.who }) : null),
+                    h('td', null, row.job ? h(WhoCell, { who: row.job.who, tr }) : row.call ? h(WhoCell, { who: row.call.who, tr }) : null),
                     h('td', null, row.job ? `${row.job.kind}/${row.job.operation}` : row.call ? `${row.call.tool}${row.call.operation ? `/${row.call.operation}` : ''}` : ''),
                     h('td', null, row.job ? (row.job.device.kind === 'gpu' ? `GPU ${row.job.device.index ?? 0}` : tr('device.cpu')) : '—'),
                     h('td', null, row.job ? fmtDuration(row.job.durationMs ?? (row.job.startedAt ? Date.now() - row.job.startedAt : null)) : row.call ? fmtDuration(row.call.durationMs) : '—'),
-                    h('td', null, row.job ? h(Pill, { status: row.job.status }) : row.call?.ok ? h('span', { className: 'gputool-pill gputool-pill-succeeded' }, tr('doctor.ok')) : h('span', { className: 'gputool-pill gputool-pill-failed' }, tr('doctor.fail'))),
+                    h('td', null, row.job ? h(Pill, { status: row.job.status, tr }) : row.call?.ok ? h('span', { className: 'gputool-pill gputool-pill-succeeded' }, tr('doctor.ok')) : h('span', { className: 'gputool-pill gputool-pill-failed' }, tr('doctor.fail'))),
                   ),
                 ),
               ),
@@ -509,7 +516,7 @@ export function createPanel(ui: Ui): (props: any) => any {
               { key: lease.id },
               h('td', null, lease.holder),
               h('td', null, lease.devices.map((index) => `GPU ${index}`).join(', ')),
-              h('td', null, h(WhoCell, { who: lease.who })),
+              h('td', null, h(WhoCell, { who: lease.who, tr })),
               h('td', null, new Date(lease.expiresAt).toLocaleTimeString()),
               h('td', null, h('button', { type: 'button', className: 'gputool-btn gputool-btn-danger', onClick: () => void releaseLease(lease.id) }, tr('leases.release'))),
             ),
@@ -573,17 +580,17 @@ export function createPanel(ui: Ui): (props: any) => any {
             'div',
             { className: 'gputool-modal-head' },
             h('h3', null, `${job.kind}/${job.operation}`),
-            h(Pill, { status: job.status }),
+            h(Pill, { status: job.status, tr }),
             h('button', { type: 'button', className: 'gputool-btn gputool-btn-ghost', onClick: () => setDetail(null) }, '✕'),
           ),
-          h('div', { className: 'gputool-kv' }, h('span', null, tr('jobs.who')), h('span', null, h(WhoCell, { who: job.who }))),
+          h('div', { className: 'gputool-kv' }, h('span', null, tr('jobs.who')), h('span', null, h(WhoCell, { who: job.who, tr }))),
           h('div', { className: 'gputool-kv' }, h('span', null, tr('jobs.device')), h('span', null, job.device.kind === 'gpu' ? `GPU ${job.device.index ?? 0}${job.device.name ? ` (${job.device.name})` : ''}` : tr('device.cpu'))),
           h('div', { className: 'gputool-kv' }, h('span', null, tr('history.duration')), h('span', null, fmtDuration(job.durationMs))),
           h(Progress, { job }),
           h('h4', null, tr('jobs.argv')),
           h('pre', { className: 'gputool-pre' }, job.argv.join(' ')),
           job.outputs.length ? h('h4', null, tr('jobs.outputs')) : null,
-          ...job.outputs.map((entry) => h('div', { key: entry.path, className: 'gputool-kv' }, h('code', null, entry.path), h('span', { className: 'gputool-muted' }, fmtBytes(entry.bytes)), h(Copy, { value: entry.path }))),
+          ...job.outputs.map((entry) => h('div', { key: entry.path, className: 'gputool-kv' }, h('code', null, entry.path), h('span', { className: 'gputool-muted' }, fmtBytes(entry.bytes)), h(Copy, { value: entry.path, tr }))),
           job.error ? h('h4', null, tr('jobs.error')) : null,
           job.error ? h('pre', { className: 'gputool-pre gputool-pre-error' }, `${job.error.code}: ${job.error.message}`) : null,
           h('h4', null, tr('jobs.log')),
@@ -612,6 +619,28 @@ export function createPanel(ui: Ui): (props: any) => any {
           'div',
           { className: 'gputool-actions' },
           state ? h('span', { className: `gputool-tag ${state.gpu.available ? 'gputool-tag-ok' : 'gputool-tag-bad'}` }, state.gpu.available ? tr('gpu.ready') : tr('gpu.cpuOnly')) : null,
+          h(
+            'div',
+            { className: 'gputool-segmented', role: 'group', 'aria-label': tr('lang.label') },
+            ...(['ru', 'en'] as const).map((code) =>
+              h(
+                'button',
+                {
+                  key: code,
+                  type: 'button',
+                  className: `gputool-seg${language === code ? ' gputool-seg-active' : ''}`,
+                  'aria-pressed': language === code,
+                  title: tr(code === 'ru' ? 'lang.ru' : 'lang.en'),
+                  onClick: () => {
+                    if (language === code) return
+                    setLanguage(code)
+                    ui.onLanguageChange(code)
+                  },
+                },
+                code === 'ru' ? 'RU' : 'EN',
+              ),
+            ),
+          ),
           h('button', { type: 'button', className: 'gputool-btn', onClick: () => void refreshAll() }, tr('common.refresh')),
         ),
       ),
