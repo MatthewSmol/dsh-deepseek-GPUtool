@@ -33,6 +33,14 @@ export interface Settings {
   faceWorker: 'auto' | 'rust' | 'python'
   /** Шрифт для титров счёта в монтаже. */
   montageFontPath: string
+  /** Модель 4x-UltraSharp для GPU-апскейла. */
+  upscaleModelPath: string
+  /** Размер тайла и перекрытие для апскейла (CUDA). */
+  upscaleTile: number
+  upscaleOverlap: number
+  /** Кодек/качество видео-апскейла (NVENC). */
+  upscaleCodec: 'hevc' | 'h264'
+  upscaleQuality: 'fast' | 'balanced' | 'quality'
   outputRoot: string
   torchIndexUrl: string
   gpuConcurrency: number
@@ -104,7 +112,7 @@ export interface FfmpegCaps {
   hwaccels: string[]
 }
 
-export type JobKind = 'ffmpeg' | 'yolo' | 'onnx' | 'face' | 'ocr' | 'python' | 'setup'
+export type JobKind = 'ffmpeg' | 'yolo' | 'onnx' | 'face' | 'ocr' | 'python' | 'setup' | 'upscale'
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
 
 export interface JobProgress {

@@ -126,6 +126,26 @@ call history.
 - Tests: +5 (response parsing, multipart against a local server, the key never
   echoed, file limits) for 17 total.
 
+### 1.4.0 — 2026-11-24
+
+- **GPU 4x-UltraSharp upscaling** (`mcp__gputool__upscale`): a separate Rust worker
+  `bin/gputool-upscale` that runs inference **strictly on CUDA** — the session is
+  created with `session.disable_cpu_ep_fallback`, so the model is either fully on
+  the GPU or the job fails with `cuda-ep-unavailable`/`gpu-unsupported` (no CPU
+  fallback).
+- **Images**: tiled with overlap (256/16 by default), linear feathered blending
+  without seams, RGBA keeps transparency (alpha via Lanczos).
+- **Video**: NVDEC decode → frames → CUDA inference → NVENC
+  (`hevc_nvenc`/`h264_nvenc`), audio is copied (`-c:a copy`), per-frame progress
+  and ETA.
+- Measured on RTX 3060 Ti: 128² tile — 84 ms, 256² — 297 ms, 512² — 1242 ms;
+  the ~2.9 s CUDA session/model load is reused by the persistent process.
+- Settings: `upscaleModelPath`, `upscaleTile`, `upscaleOverlap`, `upscaleCodec`,
+  `upscaleQuality`; doctor checks the worker, model, ORT library and a real CUDA
+  session (`upscale-cuda`, 5-minute cache).
+- Tests: +2 Rust (tiles, weights) and +5 Node (config validation, availability);
+  34 Node + 2 Rust total.
+
 ### 1.3.0 — 2026-11-23
 
 - **`ffmpeg — operation:"raw"` is now a real escape hatch**: the whole argv
@@ -194,6 +214,21 @@ call history.
   difference is bilinear interpolation rounding, the same faces are found.
 - Tests: +2 Node (binary availability, `libonnxruntime.so` lookup) and 3 Rust
   (`nms`, `similarity`, `cosine`).
+
+## 4x-UltraSharp upscale (GPU only)
+
+```json
+{
+  "sources": ["/in/frame.png"],
+  "output": "/out/frame.4x.png",
+  "model": "/models/upscale/4x-UltraSharp.onnx",
+  "tile": 256, "overlap": 16
+}
+```
+
+Video uses the same tool with a single `source`; there is no CPU mode: without a
+usable CUDA EP the job fails instead of running on CPU. The model is shipped
+separately (67 MB); set `upscaleModelPath` or `GPUTOOL_UPSCALE_MODEL`.
 
 ## Raw ffmpeg arguments
 

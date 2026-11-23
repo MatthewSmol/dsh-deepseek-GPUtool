@@ -41,6 +41,11 @@ export function defaultSettings(): Settings {
     montageFontPath: existsSync('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf')
       ? '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
       : '',
+    upscaleModelPath: process.env.GPUTOOL_UPSCALE_MODEL ?? '',
+    upscaleTile: 256,
+    upscaleOverlap: 16,
+    upscaleCodec: 'hevc',
+    upscaleQuality: 'balanced',
     outputRoot: files.outputs(),
     torchIndexUrl: 'https://download.pytorch.org/whl/cu126',
     gpuConcurrency: 1,
@@ -74,6 +79,7 @@ const envOverrides = (): Partial<Settings> => {
     patch.faceWorker = process.env.GPUTOOL_FACE_WORKER
   }
   if (process.env.GPUTOOL_MONTAGE_FONT) patch.montageFontPath = process.env.GPUTOOL_MONTAGE_FONT
+  if (process.env.GPUTOOL_UPSCALE_MODEL) patch.upscaleModelPath = process.env.GPUTOOL_UPSCALE_MODEL
   if (process.env.GPUTOOL_OUTPUT_ROOT) patch.outputRoot = process.env.GPUTOOL_OUTPUT_ROOT
   if (process.env.GPUTOOL_HTTP_PORT) patch.httpPort = Number(process.env.GPUTOOL_HTTP_PORT) || 0
   if (process.env.GPUTOOL_API_TOKEN) patch.apiToken = process.env.GPUTOOL_API_TOKEN

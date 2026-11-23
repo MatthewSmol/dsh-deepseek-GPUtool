@@ -5,6 +5,7 @@ import type { DoctorCheck, DoctorReport, FfmpegCaps, GpuStatus, Settings } from 
 import { probeFfmpeg } from './ffmpeg.js'
 import { run } from './proc.js'
 import { gpuEnv } from './settings.js'
+import { upscaleAvailable } from './upscale-rust.js'
 
 export interface DoctorDeps {
   settings: () => Settings
@@ -74,6 +75,7 @@ print(json.dumps(result))
 
 export class Doctor {
   private vulkanCache: { available: boolean; hardware: boolean; detail: string; at: number } | null = null
+  private upscaleCache: { ok: boolean; detail: string; at: number } | null = null
   private cached: DoctorReport | null = null
   private cachedAt = 0
   private ffmpegCache = new Map<string, FfmpegCaps>()
@@ -190,6 +192,35 @@ export class Doctor {
       group: 'ffmpeg',
     })
     const vulkan = await this.vulkanCapability(settings)
+    const upscale = upscaleAvailable(settings)
+    checks.push({
+      id: 'upscale-worker',
+      title: '4x-UltraSharp worker',
+      level: existsSync(upscale.binary) ? 'ok' : 'fail',
+      detail: existsSync(upscale.binary) ? upscale.binary : `missing: ${upscale.binary} (npm run build:rust)`,
+      fix: 'Build the Rust worker with npm run build:rust.',
+      group: 'ffmpeg',
+    })
+    checks.push({
+      id: 'upscale-model',
+      title: '4x-UltraSharp model',
+      level: existsSync(upscale.model) ? 'ok' : 'warn',
+      detail: existsSync(upscale.model) ? upscale.model : `not found: ${upscale.model} (set Settings → upscaleModelPath)`,
+      fix: 'Put 4x-UltraSharp.onnx on disk and set upscaleModelPath (or GPUTOOL_UPSCALE_MODEL).',
+      group: 'onnx',
+    })
+    if (upscale.ok) {
+      const probe = await this.upscaleProbe(settings)
+      checks.push({
+        id: 'upscale-cuda',
+        title: '4x-UltraSharp on CUDA',
+        level: probe.ok ? 'ok' : 'fail',
+        detail: probe.detail,
+        fix: probe.ok ? undefined : 'The model must fit entirely on CUDA: check the ORT error, driver and CUDA EP build.',
+        group: 'gpu',
+      })
+    }
+
     checks.push({
       id: 'montage-vulkan',
       title: 'Montage Vulkan (EWA, fruc)',
@@ -341,5 +372,48 @@ export class Doctor {
     }
     this.vulkanCache = value
     return value
+  }
+
+  /**
+   * Пробное создание CUDA-сессии воркера с `disable_cpu_ep_fallback`.
+   * Дорогая операция (загрузка модели), поэтому кэшируется на 5 минут.
+   */
+  async upscaleProbe(settings: Settings): Promise<{ ok: boolean; detail: string }> {
+    if (this.upscaleCache && Date.now() - this.upscaleCache.at < 300_000) {
+      return { ok: this.upscaleCache.ok, detail: this.upscaleCache.detail }
+    }
+    const availability = upscaleAvailable(settings)
+    if (!availability.ok || !availability.library) {
+      const detail = availability.reason
+      this.upscaleCache = { ok: false, detail, at: Date.now() }
+      return { ok: false, detail }
+    }
+    const child = await run(
+      availability.binary,
+      ['--probe', '--model', availability.model, '--tile', String(settings.upscaleTile || 256)],
+      {
+        timeoutMs: 240_000,
+        env: { ...gpuEnv(settings, undefined), ORT_DYLIB_PATH: availability.library },
+        maxOutput: 2 * 1024 * 1024,
+      },
+    )
+    const line = child.stdout.split(/\r?\n/).reverse().find((entry) => entry.includes('"probe"'))
+    let detail = `probe exited ${child.code}`
+    let ok = false
+    if (line) {
+      try {
+        const parsed = JSON.parse(line) as { ok?: boolean; factor?: number; inferMs?: number; loadMs?: number }
+        ok = parsed.ok === true
+        detail = ok
+          ? `CUDA ok: ${parsed.factor ?? 4}x, tile load ${parsed.loadMs ?? '?'} ms, infer ${parsed.inferMs ?? '?'} ms`
+          : `CUDA probe failed: ${line.slice(0, 300)}`
+      } catch {
+        detail = `CUDA probe returned non-JSON: ${line.slice(0, 200)}`
+      }
+    } else if (child.stderr) {
+      detail = `CUDA probe failed: ${child.stderr.trim().split(/\r?\n/).slice(-2).join(' | ').slice(0, 300)}`
+    }
+    this.upscaleCache = { ok, detail, at: Date.now() }
+    return { ok, detail }
   }
 }

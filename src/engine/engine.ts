@@ -42,9 +42,17 @@ import {
 import { pythonProbe, pythonScript, runPythonWorker } from './python.js'
 import { DeepseekOcrError, runDeepseekOcr, type DeepseekOcrResult } from './deepseek-ocr.js'
 import { RustFaceWorker, rustFaceAvailable } from './face-rust.js'
+import {
+  RustUpscaleWorker,
+  buildUpscaleConfig,
+  isImageSource,
+  upscaleAvailable,
+  upscaleModelPath,
+  type UpscaleParams,
+} from './upscale-rust.js'
 import { run, stream } from './proc.js'
 
-export const VERSION = '1.3.0'
+export const VERSION = '1.4.0'
 
 /** Метаданные личности вызывающего из MCP-инструментов или HTTP-запросов. */
 export interface SubmitMeta {
@@ -126,6 +134,9 @@ export class Engine {
 
   /** Постоянный Rust-воркер лиц: создаётся один раз и переживает задания. */
   private faceWorker: RustFaceWorker | null = null
+
+  /** Постоянный GPU-воркер апскейла 4x-UltraSharp. */
+  private upscaleWorker: RustUpscaleWorker | null = null
 
   /** Ключ DeepSeek: сначала credential-store, затем переменная окружения. */
   async deepseekKey(settings: Settings): Promise<string> {
@@ -513,6 +524,66 @@ export class Engine {
       results.push({ path, bytes: info.size, durationSec: plan.totalMs != null ? plan.totalMs / 1000 : null })
     }
     return results
+  }
+
+  /**
+   * Апскейл 4x-UltraSharp на CUDA. GPU обязателен: CPU-режима нет, при
+   * недоступности CUDA задание падает с понятной ошибкой, а не считает на CPU.
+   */
+  async submitUpscale(params: UpscaleParams, meta: SubmitMeta): Promise<JobRecord> {
+    const settings = this.settingsStore.get()
+    const sources = (params.sources?.length ? params.sources : params.source ? [params.source] : []).filter(Boolean)
+    if (!sources.length) throw errWithCode('source or sources is required', 'invalid-args')
+    if (sources.length > 1 && sources.some((source) => !isImageSource(source))) {
+      throw errWithCode('sources[] supports images only; pass one video in source', 'invalid-args')
+    }
+    for (const source of sources) {
+      if (!existsSync(source)) throw errWithCode(`Source not found: ${source}`, 'input-missing')
+    }
+    const availability = upscaleAvailable(settings, params.model)
+    if (!availability.ok) {
+      const code = availability.reason.startsWith('model not found') ? 'upscale-model-missing' : 'upscale-worker-missing'
+      throw errWithCode(availability.reason, code)
+    }
+    const device = this.resolveDevice(params.device, true, false)
+    const batchDir = `upscale-${Date.now()}`
+    const outputs = sources.map((source) => params.output && sources.length === 1
+      ? params.output
+      : join(settings.outputRoot, batchDir, `${basename(source).replace(/\.[^.]+$/, '')}.4x.${isImageSource(source) ? 'png' : 'mp4'}`))
+    if (params.overwrite !== true) {
+      for (const path of outputs) {
+        if (existsSync(path)) throw errWithCode(`Output already exists: ${path}`, 'output-exists')
+      }
+    }
+    const self = this
+    return this.jobs.submit(
+      this.jobInput(meta, 'upscale', params as unknown as Record<string, unknown>, device, [], 'rust', 'upscale'),
+      async (ctx) => {
+        const worker = await self.ensureUpscaleWorker(device.index, settings)
+        ctx.phase('starting', 'CUDA session')
+        for (const [index, source] of sources.entries()) {
+          const output = outputs[index] as string
+          await ensureParent(output)
+          const config = buildUpscaleConfig(params, settings, source, output)
+          ctx.log(`upscale: ${basename(source)} tile=${config.tile} overlap=${config.overlap} model=${basename(config.model)}`)
+          ctx.phase('upscaling', basename(source))
+          const result = await worker.run(config, ctx)
+          ctx.log(
+            `upscale: ${result.output} ${result.width}x${result.height} scale=${result.scale} ` +
+              `device=${result.device} ${result.elapsedMs} ms`,
+          )
+          ctx.output({ path: result.output, bytes: result.bytes, durationSec: null })
+        }
+      },
+    )
+  }
+
+  private async ensureUpscaleWorker(deviceIndex: number | undefined, settings = this.settingsStore.get()): Promise<RustUpscaleWorker> {
+    if (this.upscaleWorker) return this.upscaleWorker
+    const worker = new RustUpscaleWorker(settings, deviceIndex, (message) => this.logger.warn(message))
+    await worker.start()
+    this.upscaleWorker = worker
+    return worker
   }
 
   submitYolo(params: Record<string, unknown>, meta: SubmitMeta): JobRecord {

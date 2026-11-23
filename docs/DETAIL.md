@@ -97,6 +97,16 @@ Umeyama — на Rust. Движок держит воркер между зад�
 Rust тёплый — 3,14 с, Rust холодный — 4,28 с. Без эталона Rust — 11,2 мс/кадр.
 Боксы совпадают с Python на 83 % при IoU ≥ 0,5.
 
+## GPU-апскейл 4x-UltraSharp
+
+`rust/upscale-worker` → `bin/gputool-upscale`: постоянный процесс, сессия ORT
+создаётся с CUDA EP и `session.disable_cpu_ep_fallback` (CPU-фолбэка нет).
+Картинки тайлятся (256, перекрытие 16) с линейным блендингом; RGBA сохраняет
+альфу (Lanczos). Видео: NVDEC → кадры → CUDA-инференс → NVENC, аудио copy.
+Замер (RTX 3060 Ti): 128² — 84 мс, 256² — 297 мс, 512² — 1242 мс; загрузка
+модели ~2,9 с кэшируется процессом. Ошибки: `cuda-ep-unavailable`,
+`gpu-unsupported`, `upscale-model-missing`, `upscale-factor-unsupported`.
+
 ## Монтаж одним прогоном
 
 `operation:"montage"` собирает один `-filter_complex`: сцены нормализуются

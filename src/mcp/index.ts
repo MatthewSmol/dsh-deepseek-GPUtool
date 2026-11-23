@@ -354,6 +354,35 @@ mcp.registerTool(
 )
 
 mcp.registerTool(
+  'upscale',
+  {
+    title: 'Upscale 4x on CUDA',
+    description:
+      'Upscale images or video with 4x-UltraSharp strictly on CUDA (ONNX Runtime, no CPU fallback). ' +
+      'Images are tiled with overlap and feathered; video is decoded with NVDEC, upscaled frame by frame ' +
+      'and encoded with NVENC (audio is copied). GPU is required: without a usable CUDA EP the job fails ' +
+      'with cuda-ep-unavailable/gpu-unsupported instead of running on CPU.',
+    inputSchema: z.object({
+      source: z.string().optional(),
+      sources: z.array(z.string()).optional(),
+      output: z.string().optional(),
+      model: z.string().optional(),
+      tile: z.number().optional(),
+      overlap: z.number().optional(),
+      codec: z.enum(['hevc', 'h264']).optional(),
+      quality: z.enum(['fast', 'balanced', 'quality']).optional(),
+      startSec: z.number().optional(),
+      durationSec: z.number().optional(),
+      fps: z.number().optional(),
+      overwrite: z.boolean().optional(),
+      device: deviceSchema.optional(),
+      label: z.string().optional(),
+    }),
+  },
+  async (args) => await call('upscale', args as Record<string, unknown>, async () => engine.submitUpscale(args as never, meta('upscale', args as Record<string, unknown>))),
+)
+
+mcp.registerTool(
   'ocr',
   {
     title: 'OCR (DeepSeek first, local PP-OCRv5 fallback)',

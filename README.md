@@ -128,6 +128,24 @@ npm test
 - Тесты: +5 (разбор ответа, multipart на локальный сервер, отсутствие ключа в
   тексте ошибки, лимиты файла) — всего 17.
 
+### 1.4.0 — 2026-11-24
+
+- **GPU-апскейл 4x-UltraSharp** (`mcp__gputool__upscale`): отдельный Rust-воркер
+  `bin/gputool-upscale`, инференс **строго на CUDA** — сессия создаётся с
+  `session.disable_cpu_ep_fallback`, поэтому модель либо целиком на GPU, либо
+  задание падает с `cuda-ep-unavailable`/`gpu-unsupported` (CPU-фолбэка нет).
+- **Картинки**: тайлинг с перекрытием (по умолчанию 256/16), линейный
+  feather-блендинг без швов, RGBA сохраняет прозрачность (альфа — Lanczos).
+- **Видео**: NVDEC-декод → кадры → CUDA-инференс → NVENC (`hevc_nvenc`/`h264_nvenc`),
+  аудио копируется (`-c:a copy`), прогресс по кадрам и ETA.
+- Замер на RTX 3060 Ti: 128² — 84 мс, 256² — 297 мс, 512² — 1242 мс на тайл;
+  загрузка CUDA-сессии и модели ~2,9 с переиспользуется постоянным процессом.
+- Настройки: `upscaleModelPath`, `upscaleTile`, `upscaleOverlap`, `upscaleCodec`,
+  `upscaleQuality`; doctor проверяет воркер, модель, ORT-библиотеку и реальную
+  CUDA-сессию (`upscale-cuda`, кэш 5 минут).
+- Тесты: +2 Rust (тайлы, веса) и +5 Node (валидация конфига, доступность);
+  всего 34 Node + 2 Rust.
+
 ### 1.3.0 — 2026-11-23
 
 - **`ffmpeg — operation:"raw"` стал полноценным escape hatch**: весь argv
@@ -193,6 +211,22 @@ npm test
   различие — округление билинейной интерполяции, лица находятся те же.
 - Тесты: +2 Node (доступность бинаря и поиск `libonnxruntime.so`) и 3 Rust
   (`nms`, `similarity`, `cosine`).
+
+## Апскейл 4x-UltraSharp (только GPU)
+
+```json
+{
+  "sources": ["/in/frame.png"],
+  "output": "/out/frame.4x.png",
+  "model": "/models/upscale/4x-UltraSharp.onnx",
+  "tile": 256, "overlap": 16,
+  "label": "4x постер"
+}
+```
+
+Видео — тот же инструмент с одним `source`: `{"source":"clip.mp4","output":"clip.4x.mp4","codec":"hevc","quality":"balanced"}`.
+CPU-режима нет: при недоступной CUDA задание падает, а не считает на процессоре.
+Модель поставляется отдельно (67 МБ), путь задаётся `upscaleModelPath` или `GPUTOOL_UPSCALE_MODEL`.
 
 ## Сырые аргументы ffmpeg
 

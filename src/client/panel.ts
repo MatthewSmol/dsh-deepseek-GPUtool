@@ -107,6 +107,9 @@ export interface SettingsView {
   ocrModelDir: string
   ocrEngine?: 'auto' | 'deepseek' | 'local'
   faceWorker?: 'auto' | 'rust' | 'python'
+  upscaleModelPath?: string
+  upscaleTile?: number
+  upscaleOverlap?: number
   deepseekBaseUrl?: string
   deepseekApiKeyEnv?: string
   outputRoot: string
@@ -570,6 +573,9 @@ export function createPanel(ui: Ui): (props: any) => any {
           field('faceWorker', tr('settings.faceWorker')),
           field('deepseekBaseUrl', tr('settings.deepseekBaseUrl')),
           field('deepseekApiKeyEnv', tr('settings.ocrKeyEnv')),
+          field('upscaleModelPath', tr('settings.upscaleModel')),
+          field('upscaleTile', tr('settings.upscaleTile'), true),
+          field('upscaleOverlap', tr('settings.upscaleOverlap'), true),
           field('outputRoot', tr('settings.outputRoot')),
           field('torchIndexUrl', tr('settings.torchIndex')),
           field('gpuConcurrency', tr('settings.gpuConcurrency'), true),

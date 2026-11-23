@@ -3,6 +3,9 @@
 export type Dict = Record<string, string>
 
 export const en: Dict = {
+  'settings.upscaleModel': '4x-UltraSharp model path (.onnx)',
+  'settings.upscaleTile': 'Upscale tile (64–512)',
+  'settings.upscaleOverlap': 'Upscale tile overlap',
   'settings.stale': 'no data from the server',
   'settings.staleHint': 'The plugin server runs an older version: restart DSH to see the real engine state',
   'jobs.emptyActive': 'No running or queued jobs right now',
@@ -120,6 +123,9 @@ export const en: Dict = {
 }
 
 export const ru: Dict = {
+  'settings.upscaleModel': '4x-UltraSharp: путь к модели (.onnx)',
+  'settings.upscaleTile': 'Апскейл: тайл (64–512)',
+  'settings.upscaleOverlap': 'Апскейл: перекрытие тайлов',
   'settings.stale': 'нет данных от сервера',
   'settings.staleHint': 'Сервер плагина старой версии: перезапустите DSH, чтобы увидеть фактическое состояние движков',
   'jobs.emptyActive': 'Сейчас нет выполняющихся или ожидающих задач',
