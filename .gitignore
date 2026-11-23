@@ -17,3 +17,8 @@ dist/
 # Кеш Python
 __pycache__/
 *.pyc
+
+# Локальный кеш cargo для офлайн-сборки Rust-воркеров
+/.cargo-home/
+/.cargo-probe/
+/rust/target/
