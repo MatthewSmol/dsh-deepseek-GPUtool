@@ -5,6 +5,7 @@ import { readFileSync, rmSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import readline from 'node:readline'
+import { VERSION } from '../engine/engine.js'
 
 const TOOLS = ['status', 'probe', 'ffmpeg', 'yolo', 'onnx', 'face', 'ocr', 'python', 'jobs', 'job', 'cancel', 'history', 'gpu', 'setup', 'settings']
 
@@ -48,7 +49,7 @@ test('MCP server negotiates, lists tools/resources and answers status', async ()
     assert.ok(resources.result.resources.some((entry: any) => entry.uri === 'gputool://doctor'))
     const status = await request('tools/call', { name: 'status', arguments: {} })
     const value = JSON.parse(status.result.content[0].text)
-    assert.equal(value.version, '1.0.0')
+    assert.equal(value.version, VERSION)
     assert.equal(typeof value.apiBaseUrl, 'string')
     await new Promise((resolve) => setTimeout(resolve, 300))
     const endpoint = JSON.parse(readFileSync(join(home, 'endpoint.json'), 'utf8'))

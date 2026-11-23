@@ -3,7 +3,7 @@
 [English](README.en.md) | Русский
 
 DSH-плагин и локальный MCP-сервис для общей GPU-работы: ffmpeg NVDEC/NVENC,
-ONNX Runtime CUDA (YuNet/SFace), PP-OCRv5, YOLO11 и GPU-скрипты. У каждой задачи
+ONNX Runtime CUDA (YuNet/SFace), OCR (DeepSeek → PP-OCRv5), YOLO11 и GPU-скрипты. У каждой задачи
 есть живой прогресс (процент, ETA, fps), а история вызовов хранит, какая сессия её
 запустила и сколько времени это заняло.
 
@@ -42,9 +42,14 @@ npm test
   и NVENC (`h264/hevc/av1`, пресеты `p1–p7`, `cq`, `-tag:v hvc1`) из сборки
   `ffmpeg-nvenc`. Операции: **encode, decode, remux, trim, split, concat, frames,
   thumb, raw**; автоматический выбор кодека (NVENC → CPU-фолбэк).
-- **ONNX Runtime CUDA**: универсальный `onnx`, скан лиц **YuNet + SFace** и OCR
-  **PP-OCRv5** (детектор + распознавание) — всё через `CUDAExecutionProvider`,
-  без тихого перехода на CPU при `requireGpu`.
+- **OCR с приоритетом DeepSeek**: по умолчанию `engine="auto"` сначала вызывает
+  **DeepSeek Tools API** (`POST /v1/tools/ocr`, `text_recognition`), ключ берётся
+  из credential-store DSH (`DEEPSEEK_API_KEY`) и в конфиг не пишется; при
+  недоступности ключа/сети — локальный **PP-OCRv5** на CUDA. `engine="local"`
+  принудительно локальный путь, `engine="deepseek"` — только API.
+- **ONNX Runtime CUDA**: универсальный `onnx`, скан лиц **YuNet + SFace** и
+  локальный OCR **PP-OCRv5** (детектор + распознавание) через
+  `CUDAExecutionProvider`, без тихого перехода на CPU при `requireGpu`.
 - **YOLO11** на CUDA: `predict` и трекинг **BoT-SORT** (`track=true`,
   `tracker=botsort.yaml`), JSONL с боксами, `trackId` и центром объекта.
 - **Python-воркер** для произвольных пайплайнов: `CUDA_VISIBLE_DEVICES`,
@@ -103,6 +108,22 @@ npm test
   GPU-ICD, цепочка работала на llvmpipe, а интерполяция недоступна без
   `VK_NV_optical_flow`. Интерфейс: русский по умолчанию + английский (RU/EN).
 - README: русская и [английская](README.en.md) версии с общей историей.
+
+### 1.1.0 — 2026-11-23
+
+- **OCR через DeepSeek Tools API** (`POST /v1/tools/ocr`) с приоритетом
+  «DeepSeek → локальный PP-OCRv5»: `engine: auto|deepseek|local`, `purpose:
+  text_recognition|rich_layout_recognition`, результат — `ocr.jsonl` по страницам.
+- Ключ `DEEPSEEK_API_KEY` берётся из credential-store DSH и передаётся
+  MCP-серверу только через окружение дочернего процесса; ошибки редактируются
+  (`Bearer …`, `sk-…`, сам ключ).
+- Проверено вживую: `SCORE 11`, `:score: 3 : 2` распознаны на GPU-хосте за ~3 с,
+  токены и время пишутся в хвост лога; 401/сеть → автоматический фолбэк на
+  локальный OCR.
+- Новые настройки: `ocrEngine`, `deepseekBaseUrl`, `deepseekApiKeyEnv`,
+  `deepseekTimeoutMs` (170 с — лимит API 180 с).
+- Тесты: +5 (разбор ответа, multipart на локальный сервер, отсутствие ключа в
+  тексте ошибки, лимиты файла) — всего 17.
 
 ### Планы
 

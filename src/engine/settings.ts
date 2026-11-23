@@ -31,6 +31,11 @@ export function defaultSettings(): Settings {
     modelsDir: existsSync(KNOWN.models) ? KNOWN.models : join(gputoolHome(), 'models'),
     ocrModelDir: existsSync(KNOWN.ocr) ? KNOWN.ocr : join(gputoolHome(), 'ocr-models'),
     ocrRegion: '',
+    // Приоритет «DeepSeek → локальный PP-OCRv5»; сам ключ живёт в credential-store DSH.
+    ocrEngine: 'auto',
+    deepseekBaseUrl: 'https://api.deepseek.com',
+    deepseekApiKeyEnv: 'DEEPSEEK_API_KEY',
+    deepseekTimeoutMs: 170_000,
     outputRoot: files.outputs(),
     torchIndexUrl: 'https://download.pytorch.org/whl/cu126',
     gpuConcurrency: 1,
@@ -55,6 +60,11 @@ const envOverrides = (): Partial<Settings> => {
   if (process.env.GPUTOOL_UV) patch.uvPath = process.env.GPUTOOL_UV
   if (process.env.GPUTOOL_MODELS_DIR) patch.modelsDir = process.env.GPUTOOL_MODELS_DIR
   if (process.env.GPUTOOL_OCR_MODEL_DIR) patch.ocrModelDir = process.env.GPUTOOL_OCR_MODEL_DIR
+  if (process.env.GPUTOOL_OCR_ENGINE === 'deepseek' || process.env.GPUTOOL_OCR_ENGINE === 'local' || process.env.GPUTOOL_OCR_ENGINE === 'auto') {
+    patch.ocrEngine = process.env.GPUTOOL_OCR_ENGINE
+  }
+  if (process.env.GPUTOOL_DEEPSEEK_BASE_URL) patch.deepseekBaseUrl = process.env.GPUTOOL_DEEPSEEK_BASE_URL
+  if (process.env.GPUTOOL_DEEPSEEK_API_KEY_ENV) patch.deepseekApiKeyEnv = process.env.GPUTOOL_DEEPSEEK_API_KEY_ENV
   if (process.env.GPUTOOL_OUTPUT_ROOT) patch.outputRoot = process.env.GPUTOOL_OUTPUT_ROOT
   if (process.env.GPUTOOL_HTTP_PORT) patch.httpPort = Number(process.env.GPUTOOL_HTTP_PORT) || 0
   if (process.env.GPUTOOL_API_TOKEN) patch.apiToken = process.env.GPUTOOL_API_TOKEN
@@ -76,6 +86,8 @@ function sanitize(input: unknown, base: Settings): Settings {
   merged.jobHistoryLimit = clampInt(merged.jobHistoryLimit, 20, 2000, 300)
   merged.httpPort = clampInt(merged.httpPort, 0, 65535, 0)
   merged.allowCpuFallback = merged.allowCpuFallback !== false
+  if (merged.ocrEngine !== 'deepseek' && merged.ocrEngine !== 'local') merged.ocrEngine = 'auto'
+  merged.deepseekTimeoutMs = clampInt(merged.deepseekTimeoutMs, 5_000, 600_000, 170_000)
   merged.mcpHttpEnabled = merged.mcpHttpEnabled === true
   if (!merged.apiToken || typeof merged.apiToken !== 'string') merged.apiToken = newToken()
   return merged

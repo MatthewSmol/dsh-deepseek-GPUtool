@@ -19,7 +19,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 export const name = '@local/dsh-gputool'
 
 /** Сервисы Host, от которых зависит плагин. */
-export const inject = ['webServer', 'tools']
+export const inject = ['webServer', 'tools', 'credentials']
 
 export interface PluginConfig {
   /** Пространство имён MCP-сервера; инструменты получают вид mcp__<serverName>__<tool>. */
@@ -227,8 +227,24 @@ export async function apply(ctx: any, config: PluginConfig = {}): Promise<void> 
 
   const serverEntry = join(packageRoot(), 'dist', 'mcp', 'index.js')
   const mcp = await loadDshMcpClient()
+
+  /**
+   * Ключ DeepSeek для OCR берётся из credential-store DSH и передаётся MCP-серверу
+   * только в окружении дочернего процесса. В конфигурацию и файлы он не пишется.
+   */
+  const deepseekApiKey = async (): Promise<string> => {
+    const name = process.env.GPUTOOL_DEEPSEEK_API_KEY_ENV || 'DEEPSEEK_API_KEY'
+    try {
+      const resolved = await ctx.credentials?.resolve?.(name)
+      const value = typeof resolved === 'string' ? resolved : String(resolved?.value ?? '')
+      if (value.trim()) return value.trim()
+    } catch (error) {
+      logger.warn(`credential ${name} is unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    return (process.env[name] ?? '').trim()
+  }
   let fiber: { dispose?: () => void } | undefined
-  const mount = (reason: string): void => {
+  const mount = (reason: string, key: string = ''): void => {
     fiber?.dispose?.()
     fiber = ctx.plugin(mcp, {
       transport: 'stdio',
@@ -238,6 +254,7 @@ export async function apply(ctx: any, config: PluginConfig = {}): Promise<void> 
       env: {
         ...(config.env ?? {}),
         DSH_HOME: process.env.DSH_HOME ?? dshHome(),
+        ...(key ? { GPUTOOL_DEEPSEEK_API_KEY: key } : {}),
       },
       toolCallTimeoutMs,
       startupTimeoutMs,
@@ -247,7 +264,14 @@ export async function apply(ctx: any, config: PluginConfig = {}): Promise<void> 
     logger.info(`MCP client mounted (${reason}); prefix mcp__${serverName}__`)
   }
 
-  mount('initial')
+  // Первый запуск ждёт ключ: без него OCR молча уходит в локальный движок.
+  let currentKey = ''
+  try {
+    currentKey = await deepseekApiKey()
+  } catch {
+    currentKey = ''
+  }
+  mount('initial', currentKey)
   ctx.effect(() => () => {
     try {
       fiber?.dispose?.()
@@ -299,7 +323,7 @@ export async function apply(ctx: any, config: PluginConfig = {}): Promise<void> 
   })
 
   // Изменение настроек перемонтирует клиент, чтобы MCP-процесс перезапустился с новым окружением.
-  ctx.on('loader/volatile-update', () => mount('after a settings change'))
+  ctx.on('loader/volatile-update', () => mount('after a settings change', currentKey))
 
   logger.info(`GPU tool plugin ready; API proxy /gputool, server ${serverEntry}`)
 }

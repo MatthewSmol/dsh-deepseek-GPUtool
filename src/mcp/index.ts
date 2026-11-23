@@ -270,10 +270,12 @@ mcp.registerTool(
 mcp.registerTool(
   'ocr',
   {
-    title: 'PP-OCRv5 scoreboard OCR',
+    title: 'OCR (DeepSeek first, local PP-OCRv5 fallback)',
     description:
-      'Run PP-OCRv5 detection + recognition on the GPU for images, sampled video frames or explicit timestamps. ' +
-      'region crops before detection; results are written as JSONL with text, score and boxes.',
+      'OCR by priority DeepSeek -> local. Default engine "auto" sends the file to the DeepSeek Tools API ' +
+      '(POST /v1/tools/ocr, text_recognition by default, page-by-page text) and falls back to the local PP-OCRv5 ' +
+      'CUDA pipeline for video frames when the DeepSeek key or network is unavailable. engine="deepseek" never ' +
+      'falls back, engine="local" forces the local ONNX path. Results are written to ocr.jsonl.',
     inputSchema: z.object({
       source: z.string().optional(),
       images: z.array(z.string()).optional(),
@@ -282,6 +284,8 @@ mcp.registerTool(
       startSec: z.number().optional(),
       durationSec: z.number().optional(),
       region: z.object({ x: z.number(), y: z.number(), w: z.number(), h: z.number() }).optional(),
+      engine: z.enum(['auto', 'deepseek', 'local']).optional(),
+      purpose: z.enum(['text_recognition', 'rich_layout_recognition']).optional(),
       detLimit: z.number().optional(),
       dictPath: z.string().optional(),
       outputDir: z.string().optional(),
@@ -520,6 +524,11 @@ async function shutdown(reason: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // Ключ DeepSeek для OCR приходит из credential-store хоста переменной окружения.
+  if (process.env.GPUTOOL_DEEPSEEK_API_KEY) {
+    const deepseekKey = process.env.GPUTOOL_DEEPSEEK_API_KEY.trim()
+    if (deepseekKey) engine.deepseekKeyResolver = async () => deepseekKey
+  }
   const settings = engine.settingsStore.get()
   const port = Number(argValue('--port') ?? settings.httpPort) || 0
   await engine.boot()

@@ -3,7 +3,7 @@
 English | [Русский](README.md)
 
 A DSH plugin and local MCP service for shared GPU work: ffmpeg NVDEC/NVENC,
-ONNX Runtime CUDA (YuNet/SFace), PP-OCRv5, YOLO11 and GPU scripts. Every job has
+ONNX Runtime CUDA (YuNet/SFace), OCR (DeepSeek → PP-OCRv5), YOLO11 and GPU scripts. Every job has
 live progress (percent, ETA, fps), and the call history records which session
 started it and how long it took.
 
@@ -42,7 +42,13 @@ call history.
   `scale_cuda` and NVENC (`h264/hevc/av1`, `p1–p7`, `cq`, `-tag:v hvc1`) from the
   `ffmpeg-nvenc` build. Operations: **encode, decode, remux, trim, split,
   concat, frames, thumb, raw**; automatic codec choice (NVENC → CPU).
-- **ONNX Runtime CUDA**: generic `onnx`, **YuNet + SFace** face scan and
+- **OCR with DeepSeek priority**: `engine="auto"` (default) calls the **DeepSeek
+  Tools API** (`POST /v1/tools/ocr`, `text_recognition`) first, taking the key from
+  the DSH credential store (`DEEPSEEK_API_KEY`) and never writing it to config;
+  when the key or the network is unavailable it falls back to the local
+  **PP-OCRv5** CUDA pipeline. `engine="local"` forces the local path and
+  `engine="deepseek"` uses the API only.
+- **ONNX Runtime CUDA**: generic `onnx`, **YuNet + SFace** face scan and the local
   **PP-OCRv5** OCR (detection + recognition) through `CUDAExecutionProvider`,
   failing instead of silently using CPU when `requireGpu` is set.
 - **YOLO11** on CUDA: `predict` and **BoT-SORT** tracking (`track=true`,
@@ -104,6 +110,21 @@ call history.
   on llvmpipe, and interpolation needs `VK_NV_optical_flow`. Interface: Russian by
   default plus English (RU/EN).
 - README in Russian and English, sharing one changelog.
+
+### 1.1.0 — 2026-11-23
+
+- **OCR through the DeepSeek Tools API** (`POST /v1/tools/ocr`) with the priority
+  DeepSeek → local PP-OCRv5: `engine: auto|deepseek|local`, `purpose:
+  text_recognition|rich_layout_recognition`, page-by-page output in `ocr.jsonl`.
+- `DEEPSEEK_API_KEY` is resolved from the DSH credential store and handed to the
+  MCP server only through the child process environment; error text is redacted
+  (`Bearer …`, `sk-…`, the key itself).
+- Verified live: `SCORE 11` and `:score: 3 : 2` recognised in about 3 s with
+  tokens and timing in the job log; HTTP 401/network errors fall back to local OCR.
+- New settings: `ocrEngine`, `deepseekBaseUrl`, `deepseekApiKeyEnv`,
+  `deepseekTimeoutMs` (170 s, under the API's 180 s limit).
+- Tests: +5 (response parsing, multipart against a local server, the key never
+  echoed, file limits) for 17 total.
 
 ### Planned
 

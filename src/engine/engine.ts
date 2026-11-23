@@ -1,8 +1,9 @@
 /** Фасад движка: настройки, состояние GPU, доктор, очередь и все GPU-исполнители. */
 import { createHash } from 'node:crypto'
+import { writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { readdir, stat } from 'node:fs/promises'
-import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
 import type {
   CallRecord,
   DeviceRef,
@@ -34,9 +35,10 @@ import {
   type ProgressState,
 } from './ffmpeg.js'
 import { pythonProbe, pythonScript, runPythonWorker } from './python.js'
+import { DeepseekOcrError, runDeepseekOcr, type DeepseekOcrResult } from './deepseek-ocr.js'
 import { run, stream } from './proc.js'
 
-export const VERSION = '1.0.0'
+export const VERSION = '1.1.0'
 
 /** Метаданные личности вызывающего из MCP-инструментов или HTTP-запросов. */
 export interface SubmitMeta {
@@ -109,6 +111,26 @@ export class Engine {
   private gpuPromise: Promise<void> | null = null
   private refreshTimer: ReturnType<typeof setInterval> | null = null
   private stopSweeper: (() => void) | null = null
+
+  /** Потоковая запись OCR-результата, отдаётся наружу в тестах. */
+  static ocrFileWriter = writeFile
+
+  /** Резолвер ключа DeepSeek из credential-store DSH; задаёт host-плагин. */
+  deepseekKeyResolver: (() => Promise<string>) | null = null
+
+  /** Ключ DeepSeek: сначала credential-store, затем переменная окружения. */
+  async deepseekKey(settings: Settings): Promise<string> {
+    try {
+      if (this.deepseekKeyResolver) {
+        const value = (await this.deepseekKeyResolver()).trim()
+        if (value) return value
+      }
+    } catch {
+      /* сервис credentials недоступен — пробуем окружение */
+    }
+    const name = (settings.deepseekApiKeyEnv || 'DEEPSEEK_API_KEY').trim()
+    return (process.env[name] ?? '').trim()
+  }
 
   constructor(private readonly logger: Logger = { info() {}, warn() {} }) {
     this.jobs = new JobManager({
@@ -528,57 +550,161 @@ export class Engine {
     if (!source && !images.length) throw errWithCode('source or images is required', 'invalid-args')
     if (source && !existsSync(source)) throw errWithCode(`Source not found: ${source}`, 'input-missing')
     for (const image of images) if (!existsSync(image)) throw errWithCode(`Image not found: ${image}`, 'input-missing')
-    const device = this.resolveDevice(params.device as 'auto' | number | 'cpu' | undefined, params.device !== 'cpu', true)
+    const requested = typeof params.engine === 'string' ? params.engine : settings.ocrEngine || 'auto'
+    const engine = requested === 'deepseek' || requested === 'local' ? requested : 'auto'
     const self = this
+    // DeepSeek OCR работает в облаке и не занимает GPU: задание идёт в CPU-полосу.
+    const device: DeviceRef = engine === 'local' ? this.resolveDevice(params.device as 'auto' | number | 'cpu' | undefined, params.device !== 'cpu', true) : { kind: 'cpu' }
     return this.jobs.submit(
-      this.jobInput(meta, 'ocr', params, device, [], 'onnxruntime/ocr', 'ocr'),
+      this.jobInput(meta, 'ocr', { ...params, engine }, device, [], engine === 'local' ? 'onnxruntime/ocr' : 'deepseek/ocr', 'ocr'),
       async (ctx) => {
-        const outputDir = typeof params.outputDir === 'string' && params.outputDir ? resolvePath(params.outputDir) : join(settings.outputRoot, `ocr-${ctx.job.id}`)
-        await ensureOutputDir(outputDir)
-        let durationSec = numberOrUndefined(params.durationSec) ?? null
-        let width = 1280
-        let height = 720
-        if (source) {
-          const probe = await probeMedia(source, settings).catch(() => null)
-          if (probe?.video?.width) width = probe.video.width
-          if (probe?.video?.height) height = probe.video.height
-          if (durationSec == null) durationSec = probe?.durationSec ?? null
+        const preferred: Array<'deepseek' | 'local'> = engine === 'auto' ? ['deepseek', 'local'] : [engine]
+        for (const candidate of preferred) {
+          if (candidate === 'deepseek') {
+            try {
+              await self.runDeepseekOcr(ctx, settings, params, source, images)
+              return
+            } catch (error) {
+              const message = self.redact(error, '')
+              // Ключ не настроен — это нормальный режим без DeepSeek, а не сбой.
+              const skipped = error instanceof DeepseekOcrError && error.code === 'api-key-missing'
+              ctx.log(`deepseek ocr ${skipped ? 'skipped' : 'failed'}: ${message}`)
+              if (engine === 'deepseek') throw errWithCode(`DeepSeek OCR failed: ${message}`, 'deepseek-ocr-failed')
+              const deviceRef = self.resolveDevice(params.device as 'auto' | number | 'cpu' | undefined, params.device !== 'cpu', true)
+              ctx.job.device = deviceRef
+              ctx.log(`fallback to local PP-OCRv5 on ${describeDevice(deviceRef)}`)
+            }
+          } else {
+            await self.runLocalOcr(ctx, settings, params, source, images, self.resolveDevice(params.device as 'auto' | number | 'cpu' | undefined, params.device !== 'cpu', true))
+            return
+          }
         }
-        const fps = numberOrUndefined(params.fps) ?? 1
-        if (durationSec != null && !params.atSec) {
-          ctx.progress({ totalFrames: Math.max(1, Math.round(durationSec * fps)), percent: 0 })
-        }
-        const value = await runPythonWorker({
-          script: pythonScript('ocr_worker.py'),
-          config: {
-            modelDir: settings.ocrModelDir,
-            dictPath: typeof params.dictPath === 'string' ? params.dictPath : undefined,
-            region: params.region ?? (settings.ocrRegion || undefined),
-            source: source || undefined,
-            images,
-            atSec: Array.isArray(params.atSec) ? params.atSec : undefined,
-            fps,
-            startSec: numberOrUndefined(params.startSec) ?? 0,
-            durationSec,
-            width,
-            height,
-            detLimit: numberOrUndefined(params.detLimit) ?? 960,
-            outputDir,
-            ffmpegPath: settings.ffmpegPath,
-            device: self.deviceIndex(device) != null ? 'cuda:0' : 'cpu',
-          },
-          settings,
-          ctx,
-          deviceIndex: self.deviceIndex(device),
-        })
-        const result = value as { jsonl?: string } | null
-        if (result?.jsonl) {
-          const info = await stat(result.jsonl).catch(() => null)
-          if (info) ctx.output({ path: result.jsonl, bytes: info.size, durationSec: null })
-        }
-        ctx.log(`ocr result: ${JSON.stringify(value)}`)
       },
     )
+  }
+
+  /** Ключ в тексте ошибки заменяется пометкой. */
+  private redact(error: unknown, apiKey: string): string {
+    const message = error instanceof Error ? error.message : String(error)
+    const secret = (apiKey ?? '').trim()
+    return (secret ? message.split(secret).join('[redacted]') : message).slice(0, 600)
+  }
+
+  /** OCR через DeepSeek Tools API и запись результата в JSONL. */
+  async runDeepseekOcr(
+    ctx: JobContext,
+    settings: Settings,
+    params: Record<string, unknown>,
+    source: string,
+    images: string[],
+  ): Promise<DeepseekOcrResult> {
+    ctx.phase('auth', 'резолв ключа DeepSeek')
+    const apiKey = await this.deepseekKey(settings)
+    if (!apiKey) throw new DeepseekOcrError('api-key-missing', 'DeepSeek API key is not configured')
+    const purpose = params.purpose === 'rich_layout_recognition' ? 'rich_layout_recognition' : 'text_recognition'
+    const targets = source ? [source] : images
+    const outputDir = typeof params.outputDir === 'string' && params.outputDir ? resolvePath(params.outputDir) : join(settings.outputRoot, `ocr-${ctx.job.id}`)
+    await ensureOutputDir(outputDir)
+    const jsonl = join(outputDir, 'ocr.jsonl')
+    const lines: string[] = []
+    ctx.progress({ totalFrames: targets.length, frame: 0, percent: 0 })
+    let last: DeepseekOcrResult | null = null
+    for (const [order, target] of targets.entries()) {
+      ctx.phase('upload', `DeepSeek OCR ${order + 1}/${targets.length}: ${basename(target)}`)
+      last = await runDeepseekOcr({
+        apiKey,
+        baseUrl: settings.deepseekBaseUrl,
+        file: target,
+        purpose,
+        timeoutMs: settings.deepseekTimeoutMs,
+        signal: ctx.signal,
+      })
+      ctx.log(`deepseek ocr ${basename(target)}: ${last.pageCount} стр., ${last.usage.totalTokens} токенов, ${last.elapsedMs} мс`)
+      for (const page of last.pages) {
+        const record = {
+          engine: 'deepseek',
+          file: target,
+          page: page.index,
+          text: page.text,
+          finishReason: page.finishReason,
+          ocrId: last.id,
+          purpose: last.purpose,
+        }
+        lines.push(JSON.stringify(record))
+        if (page.finishReason === 'length') ctx.log(`warning: page ${page.index} of ${basename(target)} was truncated (finish_reason=length)`)
+      }
+      ctx.progress({ frame: order + 1, percent: Math.round(((order + 1) / targets.length) * 100) })
+    }
+    await Engine.ocrFileWriter(jsonl, lines.join('\n') + '\n', 'utf8')
+    const info = await stat(jsonl).catch(() => null)
+    if (info) ctx.output({ path: jsonl, bytes: info.size, durationSec: null })
+    ctx.log(
+      `ocr result: ${JSON.stringify({
+        engine: 'deepseek',
+        files: targets.length,
+        pages: last?.pageCount ?? 0,
+        tokens: last?.usage.totalTokens ?? 0,
+        elapsedMs: last?.elapsedMs ?? 0,
+        jsonl,
+      })}`,
+    )
+    return last as DeepseekOcrResult
+  }
+
+  /** Локальный PP-OCRv5 на CUDA: прежний путь, оставлен как запасной. */
+  async runLocalOcr(
+    ctx: JobContext,
+    settings: Settings,
+    params: Record<string, unknown>,
+    source: string,
+    images: string[],
+    device: DeviceRef,
+  ): Promise<void> {
+    const outputDir = typeof params.outputDir === 'string' && params.outputDir ? resolvePath(params.outputDir) : join(settings.outputRoot, `ocr-${ctx.job.id}`)
+    await ensureOutputDir(outputDir)
+    let durationSec = numberOrUndefined(params.durationSec) ?? null
+    let width = 1280
+    let height = 720
+    if (source) {
+      const probe = await probeMedia(source, settings).catch(() => null)
+      if (probe?.video?.width) width = probe.video.width
+      if (probe?.video?.height) height = probe.video.height
+      if (durationSec == null) durationSec = probe?.durationSec ?? null
+    }
+    const fps = numberOrUndefined(params.fps) ?? 1
+    if (durationSec != null && !params.atSec) {
+      ctx.progress({ totalFrames: Math.max(1, Math.round(durationSec * fps)), percent: 0 })
+    }
+    ctx.phase('local', 'локальный PP-OCRv5 на GPU')
+    const value = await runPythonWorker({
+      script: pythonScript('ocr_worker.py'),
+      config: {
+        modelDir: settings.ocrModelDir,
+        dictPath: typeof params.dictPath === 'string' ? params.dictPath : undefined,
+        region: params.region ?? (settings.ocrRegion || undefined),
+        source: source || undefined,
+        images,
+        atSec: Array.isArray(params.atSec) ? params.atSec : undefined,
+        fps,
+        startSec: numberOrUndefined(params.startSec) ?? 0,
+        durationSec,
+        width,
+        height,
+        detLimit: numberOrUndefined(params.detLimit) ?? 960,
+        outputDir,
+        ffmpegPath: settings.ffmpegPath,
+        device: this.deviceIndex(device) != null ? 'cuda:0' : 'cpu',
+      },
+      settings,
+      ctx,
+      deviceIndex: this.deviceIndex(device),
+    })
+    const result = value as { jsonl?: string } | null
+    if (result?.jsonl) {
+      const info = await stat(result.jsonl).catch(() => null)
+      if (info) ctx.output({ path: result.jsonl, bytes: info.size, durationSec: null })
+    }
+    ctx.log(`ocr result: ${JSON.stringify(value)}`)
   }
 
   submitPython(params: Record<string, unknown>, meta: SubmitMeta): JobRecord {

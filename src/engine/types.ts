@@ -21,6 +21,14 @@ export interface Settings {
   ocrModelDir: string
   /** Область табло по умолчанию для OCR, если вызывающий не задал region. */
   ocrRegion: string
+  /** Приоритет OCR: DeepSeek Tools API, затем локальный PP-OCRv5, либо заданный явно. */
+  ocrEngine: 'auto' | 'deepseek' | 'local'
+  /** Корень DeepSeek API для OCR. */
+  deepseekBaseUrl: string
+  /** Имя credential-переменной (или переменной окружения) с ключом DeepSeek. */
+  deepseekApiKeyEnv: string
+  /** Таймаут запроса DeepSeek OCR (мс). */
+  deepseekTimeoutMs: number
   outputRoot: string
   torchIndexUrl: string
   gpuConcurrency: number
