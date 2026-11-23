@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "rootDir": "src/client",
+    "strict": true,
+    "skipLibCheck": true,
+    "removeComments": false,
+    "sourceMap": false,
+    "types": [],
+    "noEmit": true,
+    "moduleResolution": "Bundler",
+    "jsx": "react",
+    "allowSyntheticDefaultImports": true
+  },
+  "include": ["src/client/**/*.ts", "src/client/**/*.tsx"]
+}

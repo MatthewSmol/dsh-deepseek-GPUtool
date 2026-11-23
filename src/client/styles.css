@@ -1,0 +1,541 @@
+.gputool-root {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 20px 32px;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  color: var(--dsw-alias-label-primary, #1f2328);
+  background: var(--dsw-alias-bg-layer-1, transparent);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.gputool-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.gputool-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.gputool-header p {
+  margin: 4px 0 0;
+  max-width: 720px;
+}
+.gputool-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gputool-muted {
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+  font-size: 12px;
+}
+.gputool-banner {
+  border: 1px solid var(--dsw-alias-state-error-primary, #d0d7de);
+  background: var(--dsw-alias-bg-layer-2, #fff8f8);
+  color: var(--dsw-alias-state-error-primary, #b42318);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.gputool-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2, #e5e7eb);
+  padding-bottom: 6px;
+  flex-wrap: wrap;
+}
+.gputool-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, #4b5563);
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+}
+.gputool-tab:hover {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.05));
+}
+.gputool-tab-active {
+  background: var(--dsw-alias-bg-layer-3, rgba(0, 0, 0, 0.07));
+  color: var(--dsw-alias-label-primary, #111827);
+  font-weight: 600;
+}
+
+.gputool-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.25fr);
+  gap: 12px;
+  align-items: start;
+}
+.gputool-grid > .gputool-card:last-child {
+  grid-column: 1 / -1;
+}
+
+.gputool-card {
+  border: 1px solid var(--dsw-alias-border-l2, #e5e7eb);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--dsw-alias-card-fill, transparent);
+  min-width: 0;
+}
+.gputool-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.gputool-card-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--dsw-alias-label-secondary, #4b5563);
+}
+
+.gputool-gpus {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.gputool-gpu {
+  border: 1px solid var(--dsw-alias-border-l3, #eef0f2);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.gputool-gpu-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.gputool-bar {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-3, rgba(0, 0, 0, 0.08));
+  overflow: hidden;
+}
+.gputool-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--dsw-alias-brand-primary, #247bbf);
+  transition: width 0.25s ease;
+}
+.gputool-bar-gpu {
+  background: var(--dsw-alias-state-success-primary, #2f9e44);
+}
+.gputool-bar-indeterminate .gputool-bar-fill {
+  width: 40%;
+  animation: gputool-slide 1.2s ease-in-out infinite;
+}
+@keyframes gputool-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(260%); }
+}
+
+.gputool-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+.gputool-progress-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.gputool-progress-line .gputool-bar {
+  flex: 1;
+}
+.gputool-progress-percent {
+  min-width: 48px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.gputool-progress-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.gputool-checks {
+  display: flex;
+  flex-direction: column;
+}
+.gputool-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--dsw-alias-border-l4, #f0f1f3);
+}
+.gputool-check:first-child {
+  border-top: 0;
+}
+.gputool-check-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-top: 6px;
+  flex: 0 0 auto;
+  background: var(--dsw-alias-label-tertiary, #9ca3af);
+}
+.gputool-check-ok .gputool-check-dot {
+  background: var(--dsw-alias-state-success-primary, #2f9e44);
+}
+.gputool-check-warn .gputool-check-dot {
+  background: var(--dsw-alias-state-warn-primary, #f08c00);
+}
+.gputool-check-fail .gputool-check-dot {
+  background: var(--dsw-alias-state-error-primary, #e03131);
+}
+.gputool-check-body {
+  flex: 1;
+  min-width: 0;
+}
+.gputool-check-title {
+  font-weight: 550;
+}
+.gputool-check-detail {
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+  font-size: 11.5px;
+  word-break: break-word;
+}
+.gputool-check-level {
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.gputool-tag,
+.gputool-pill,
+.gputool-source {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.gputool-tag-ok {
+  color: var(--dsw-alias-state-success-primary, #2f9e44);
+  background: var(--dsw-alias-bg-layer-3, rgba(47, 158, 68, 0.1));
+}
+.gputool-tag-bad {
+  color: var(--dsw-alias-state-error-primary, #e03131);
+  background: var(--dsw-alias-bg-layer-3, rgba(224, 49, 49, 0.1));
+}
+.gputool-pill {
+  color: var(--dsw-alias-label-secondary, #4b5563);
+  background: var(--dsw-alias-bg-layer-3, rgba(0, 0, 0, 0.06));
+}
+.gputool-pill-running {
+  color: var(--dsw-alias-state-business-primary, #1971c2);
+  background: var(--dsw-alias-bg-layer-3, rgba(25, 113, 194, 0.12));
+}
+.gputool-pill-succeeded {
+  color: var(--dsw-alias-state-success-primary, #2f9e44);
+  background: var(--dsw-alias-bg-layer-3, rgba(47, 158, 68, 0.12));
+}
+.gputool-pill-failed {
+  color: var(--dsw-alias-state-error-primary, #e03131);
+  background: var(--dsw-alias-bg-layer-3, rgba(224, 49, 49, 0.12));
+}
+.gputool-pill-cancelled {
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+}
+.gputool-source {
+  font-weight: 500;
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+  border: 1px solid var(--dsw-alias-border-l3, #e5e7eb);
+}
+
+.gputool-sub {
+  margin-top: 10px;
+}
+.gputool-sub h4,
+.gputool-modal h4 {
+  margin: 12px 0 4px;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+}
+.gputool-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--dsw-alias-label-secondary, #4b5563);
+}
+.gputool-hints {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--dsw-alias-state-warn-primary, #b35c00);
+  font-size: 12px;
+}
+
+.gputool-kv {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 3px 0;
+}
+.gputool-kv > span:first-child {
+  min-width: 84px;
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+  font-size: 11.5px;
+}
+.gputool-kv code {
+  font-size: 11.5px;
+  word-break: break-all;
+}
+
+.gputool-jobs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.gputool-job {
+  border: 1px solid var(--dsw-alias-border-l2, #e5e7eb);
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  background: var(--dsw-alias-card-fill, transparent);
+}
+.gputool-job:hover {
+  background: var(--dsw-alias-card-fill-hover, rgba(0, 0, 0, 0.02));
+}
+.gputool-job-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.gputool-job-head strong {
+  font-weight: 600;
+}
+.gputool-who {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.gputool-session {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+.gputool-label {
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+  font-size: 11.5px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gputool-filters {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.gputool-segmented {
+  display: inline-flex;
+  border: 1px solid var(--dsw-alias-border-l2, #e5e7eb);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.gputool-seg {
+  border: 0;
+  background: transparent;
+  padding: 5px 10px;
+  font: inherit;
+  color: var(--dsw-alias-label-secondary, #4b5563);
+  cursor: pointer;
+}
+.gputool-seg-active {
+  background: var(--dsw-alias-bg-layer-3, rgba(0, 0, 0, 0.08));
+  color: var(--dsw-alias-label-primary, #111827);
+  font-weight: 600;
+}
+.gputool-input {
+  font: inherit;
+  color: var(--dsw-alias-label-primary, #111827);
+  background: var(--dsw-alias-bg-layer-1, transparent);
+  border: 1px solid var(--dsw-alias-border-l2, #d0d7de);
+  border-radius: 7px;
+  padding: 6px 9px;
+  min-width: 160px;
+}
+.gputool-input:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary, #247bbf);
+  outline-offset: 1px;
+}
+
+.gputool-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.gputool-table th,
+.gputool-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--dsw-alias-border-l4, #f0f1f3);
+  vertical-align: top;
+}
+.gputool-table th {
+  font-weight: 600;
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.gputool-nowrap {
+  white-space: nowrap;
+}
+.gputool-row-click {
+  cursor: pointer;
+}
+.gputool-row-click:hover {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.03));
+}
+
+.gputool-empty {
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+  padding: 18px 4px;
+}
+
+.gputool-btn {
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid var(--dsw-alias-border-l2, #d0d7de);
+  background: var(--dsw-alias-bg-layer-1, transparent);
+  color: var(--dsw-alias-label-primary, #111827);
+  border-radius: 7px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.gputool-btn:hover {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.05));
+}
+.gputool-btn-primary {
+  background: var(--dsw-alias-button-primary-fill, #247bbf);
+  border-color: transparent;
+  color: var(--dsw-alias-label-primary-foreground, #fff);
+}
+.gputool-btn-danger {
+  color: var(--dsw-alias-state-error-primary, #e03131);
+}
+.gputool-btn-ghost {
+  border-color: transparent;
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+}
+
+.gputool-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px 14px;
+}
+.gputool-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.gputool-field > span {
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+}
+.gputool-field .gputool-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+
+.gputool-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 18, 22, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 60;
+}
+.gputool-modal {
+  width: min(860px, 100%);
+  max-height: 82vh;
+  overflow: auto;
+  background: var(--dsw-alias-bg-layer-1, #fff);
+  color: var(--dsw-alias-label-primary, #111827);
+  border: 1px solid var(--dsw-alias-border-l2, #d0d7de);
+  border-radius: 12px;
+  padding: 16px 18px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.24);
+}
+.gputool-modal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.gputool-modal-head h3 {
+  margin: 0;
+  flex: 1;
+  font-size: 15px;
+}
+.gputool-pre {
+  margin: 4px 0 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-3, rgba(0, 0, 0, 0.05));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow: auto;
+}
+.gputool-pre-error {
+  color: var(--dsw-alias-state-error-primary, #b42318);
+}
+.gputool-error-text {
+  color: var(--dsw-alias-state-error-primary, #b42318);
+  font-size: 12px;
+  margin: 4px 0;
+}
+
+@media (max-width: 900px) {
+  .gputool-grid {
+    grid-template-columns: 1fr;
+  }
+  .gputool-root {
+    padding: 14px 12px 24px;
+  }
+}

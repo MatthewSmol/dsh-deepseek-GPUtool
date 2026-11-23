@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.npm-cache/
+.pnpm-store/
+*.log
+.env
+.env.*
+*.endpoint.json
+.DS_Store
+
+# AGENTS.md только локально: это рабочие правила для агентов, не часть репозитория.
+/AGENTS.md
+
+# Временные файлы ручной проверки (тестовые клипы, endpoint, истории)
+/.tmp/
+
+# Кеш Python
+__pycache__/
+*.pyc

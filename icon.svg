@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="GPU tool">
+  <rect width="64" height="64" rx="14" fill="#101722"/>
+  <rect x="9" y="16" width="46" height="28" rx="5" fill="none" stroke="#7fd4a3" stroke-width="3"/>
+  <path d="M9 24h46M9 36h46" stroke="#3f6b57" stroke-width="2"/>
+  <path d="M20 52h24M32 44v8" stroke="#e7eef6" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="45" cy="30" r="4" fill="#47b26b"/>
+  <path d="M17 30h12M17 35h8" stroke="#e0a33e" stroke-width="3" stroke-linecap="round"/>
+</svg>

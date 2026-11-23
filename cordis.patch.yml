@@ -1,0 +1,9 @@
+# GPU tool bundle layer: the DSH host plugin mounts the local gputool MCP server
+# (stdio) and proxies its loopback HTTP API under /gputool for the sidebar panel.
+- insert:
+    - id: gputool
+      name: '@local/dsh-gputool'
+      config:
+        serverName: gputool
+        toolCallTimeoutMs: 900000
+        startupTimeoutMs: 30000

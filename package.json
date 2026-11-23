@@ -1,0 +1,54 @@
+{
+  "name": "@local/dsh-gputool",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "GPU tool: MCP service for ffmpeg NVDEC/NVENC/Vulkan, ONNX Runtime CUDA (YuNet/SFace), PP-OCRv5, YOLO11 and python jobs, with progress, leases and call history.",
+  "exports": {
+    ".": "./dist/index.js",
+    "./client": "./dist/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/client.meta.json",
+    "python/*.py",
+    "python/requirements.txt",
+    "locale/*.json",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "docs"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "build:host": "tsc -p tsconfig.json",
+    "build:client": "vite build --config vite.config.mts",
+    "build:client:pack": "node scripts/build-client.mjs",
+    "build": "npm run build:host && tsc -p tsconfig.client.json --noEmit && npm run build:client && npm run build:client:pack",
+    "test": "npm run build && node --test dist/test/*.test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.4.0",
+    "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "typescript": "^5.7.2",
+    "vite": "^7.3.8"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  }
+}

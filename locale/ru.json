@@ -1,0 +1,8 @@
+{
+  "meta": {
+    "title": "GPU tool",
+    "description": "MCP-сервис для общей GPU-работы: ffmpeg NVDEC/NVENC/Vulkan, ONNX Runtime CUDA (YuNet/SFace), OCR PP-OCRv5 и YOLO11 — с живым прогрессом, арендой GPU и историей вызовов.",
+    "detail": "docs/DETAIL.md"
+  },
+  "nav": "GPU tool"
+}

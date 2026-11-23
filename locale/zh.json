@@ -1,0 +1,8 @@
+{
+  "meta": {
+    "title": "GPU 工具",
+    "description": "共享 GPU 的 MCP 服务：ffmpeg NVDEC/NVENC/Vulkan、ONNX Runtime CUDA（YuNet/SFace）、PP-OCRv5 OCR 与 YOLO11，提供实时进度、GPU 租约和调用历史。",
+    "detail": "docs/DETAIL.md"
+  },
+  "nav": "GPU 工具"
+}
