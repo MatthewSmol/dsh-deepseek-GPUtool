@@ -36,9 +36,10 @@ import {
 } from './ffmpeg.js'
 import { pythonProbe, pythonScript, runPythonWorker } from './python.js'
 import { DeepseekOcrError, runDeepseekOcr, type DeepseekOcrResult } from './deepseek-ocr.js'
+import { RustFaceWorker, rustFaceAvailable } from './face-rust.js'
 import { run, stream } from './proc.js'
 
-export const VERSION = '1.1.0'
+export const VERSION = '1.2.0'
 
 /** Метаданные личности вызывающего из MCP-инструментов или HTTP-запросов. */
 export interface SubmitMeta {
@@ -118,6 +119,9 @@ export class Engine {
   /** Резолвер ключа DeepSeek из credential-store DSH; задаёт host-плагин. */
   deepseekKeyResolver: (() => Promise<string>) | null = null
 
+  /** Постоянный Rust-воркер лиц: создаётся один раз и переживает задания. */
+  private faceWorker: RustFaceWorker | null = null
+
   /** Ключ DeepSeek: сначала credential-store, затем переменная окружения. */
   async deepseekKey(settings: Settings): Promise<string> {
     try {
@@ -161,6 +165,10 @@ export class Engine {
   }
 
   async dispose(): Promise<void> {
+    if (this.faceWorker) {
+      await this.faceWorker.dispose().catch(() => undefined)
+      this.faceWorker = null
+    }
     if (this.refreshTimer) clearInterval(this.refreshTimer)
     this.refreshTimer = null
     this.stopSweeper?.()
@@ -511,6 +519,48 @@ export class Engine {
         const durationSec = numberOrUndefined(params.durationSec) ?? null
         const totalFrames = durationSec != null ? Math.max(1, Math.round(durationSec * fps)) : probe?.durationSec != null ? Math.max(1, Math.round(probe.durationSec * fps)) : null
         ctx.progress({ totalFrames, fps: null, percent: 0 })
+        const backend = (typeof params.worker === 'string' ? params.worker : settings.faceWorker) || 'auto'
+        const availability = rustFaceAvailable(settings)
+        const useRust = backend === 'rust' || (backend === 'auto' && availability.ok)
+        if (useRust && availability.ok) {
+          try {
+            if (!self.faceWorker) {
+              self.faceWorker = new RustFaceWorker(settings, self.deviceIndex(device) ?? undefined, (line) => ctx.log(line))
+            }
+            const result = await self.faceWorker.run(
+              {
+                source,
+                refImage: typeof params.refImage === 'string' ? resolvePath(params.refImage) : undefined,
+                fps,
+                startSec: numberOrUndefined(params.startSec) ?? 0,
+                durationSec,
+                width: probe?.video?.width ?? 1280,
+                height: probe?.video?.height ?? 720,
+                conf: numberOrUndefined(params.conf) ?? 0.6,
+                matchThreshold: numberOrUndefined(params.matchThreshold) ?? 0.363,
+                outputDir,
+                modelDir: settings.modelsDir,
+                ffmpegPath: settings.ffmpegPath,
+                batch: numberOrUndefined(params.batch) ?? 8,
+                threads: numberOrUndefined(params.threads) ?? 2,
+              },
+              ctx,
+            )
+            if (result.jsonl) {
+              const info = await stat(result.jsonl).catch(() => null)
+              if (info) ctx.output({ path: result.jsonl, bytes: info.size, durationSec: null })
+            }
+            ctx.log(`face result: ${JSON.stringify(result)}`)
+            return
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            if (backend === 'rust') throw error
+            ctx.log(`rust face worker failed, falling back to python: ${message}`)
+            self.faceWorker = null
+          }
+        } else if (backend === 'rust') {
+          throw errWithCode(`Rust face worker is unavailable: ${availability.reason}`, 'face-worker-unavailable')
+        }
         const value = await runPythonWorker({
           script: pythonScript('face_worker.py'),
           config: {

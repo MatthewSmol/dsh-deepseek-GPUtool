@@ -126,6 +126,30 @@ call history.
 - Tests: +5 (response parsing, multipart against a local server, the key never
   echoed, file limits) for 17 total.
 
+### 1.2.0 — 2026-11-23
+
+- **Rust face worker** (`rust/face-worker`, binary `bin/gputool-face`): a persistent
+  process with a single `onnxruntime` environment. YuNet and SFace sessions are
+  created once, frames are read from ffmpeg, prepared with precomputed resize
+  weights and inferred in batches (up to 8), with NMS and alignment in Rust.
+- **Measured on one clip** (20 s, 200 frames, 3 faces per frame, with reference):
+  the Python worker took **24.2 s** (121 ms/frame), warm Rust **3.14 s**
+  (15.7 ms/frame), cold Rust 4.28 s — about **7.7×**; without a reference Rust
+  runs at 11.2 ms/frame.
+- **Why**: Python rebuilds ORT sessions on every job, runs
+  `estimateAffinePartial2D`/`warpAffine` per face and fights the GIL; Rust keeps
+  sessions alive, and the weight-table resize cut 18.5 → 11.2 ms/frame.
+- **Honesty**: the worker reports the device it actually attached (CUDA or CPU)
+  in `ready` and in the result; the engine falls back to the Python path when the
+  Rust binary is missing or fails.
+- **Settings**: `faceWorker: auto|rust|python` (default `auto`), MCP options
+  `worker`, `batch`, `threads`; build with `npm run build:rust`, test with
+  `npm run test:rust`.
+- **Parity**: 83 % of boxes match Python at IoU ≥ 0.5 (median 0.893); the
+  difference is bilinear interpolation rounding, the same faces are found.
+- Tests: +2 Node (binary availability, `libonnxruntime.so` lookup) and 3 Rust
+  (`nms`, `similarity`, `cosine`).
+
 ### Planned
 
 - Rust workers for internal stages (detection, OCR post-processing, tracking) —

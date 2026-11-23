@@ -36,6 +36,8 @@ export function defaultSettings(): Settings {
     deepseekBaseUrl: 'https://api.deepseek.com',
     deepseekApiKeyEnv: 'DEEPSEEK_API_KEY',
     deepseekTimeoutMs: 170_000,
+    // Постоянный Rust-воркер убирает холодный старт; python — запасной путь.
+    faceWorker: 'auto',
     outputRoot: files.outputs(),
     torchIndexUrl: 'https://download.pytorch.org/whl/cu126',
     gpuConcurrency: 1,
@@ -65,6 +67,9 @@ const envOverrides = (): Partial<Settings> => {
   }
   if (process.env.GPUTOOL_DEEPSEEK_BASE_URL) patch.deepseekBaseUrl = process.env.GPUTOOL_DEEPSEEK_BASE_URL
   if (process.env.GPUTOOL_DEEPSEEK_API_KEY_ENV) patch.deepseekApiKeyEnv = process.env.GPUTOOL_DEEPSEEK_API_KEY_ENV
+  if (process.env.GPUTOOL_FACE_WORKER === 'rust' || process.env.GPUTOOL_FACE_WORKER === 'python' || process.env.GPUTOOL_FACE_WORKER === 'auto') {
+    patch.faceWorker = process.env.GPUTOOL_FACE_WORKER
+  }
   if (process.env.GPUTOOL_OUTPUT_ROOT) patch.outputRoot = process.env.GPUTOOL_OUTPUT_ROOT
   if (process.env.GPUTOOL_HTTP_PORT) patch.httpPort = Number(process.env.GPUTOOL_HTTP_PORT) || 0
   if (process.env.GPUTOOL_API_TOKEN) patch.apiToken = process.env.GPUTOOL_API_TOKEN
@@ -88,6 +93,7 @@ function sanitize(input: unknown, base: Settings): Settings {
   merged.allowCpuFallback = merged.allowCpuFallback !== false
   if (merged.ocrEngine !== 'deepseek' && merged.ocrEngine !== 'local') merged.ocrEngine = 'auto'
   merged.deepseekTimeoutMs = clampInt(merged.deepseekTimeoutMs, 5_000, 600_000, 170_000)
+  if (merged.faceWorker !== 'rust' && merged.faceWorker !== 'python') merged.faceWorker = 'auto'
   merged.mcpHttpEnabled = merged.mcpHttpEnabled === true
   if (!merged.apiToken || typeof merged.apiToken !== 'string') merged.apiToken = newToken()
   return merged

@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-gputool",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "description": "GPU tool: MCP service for ffmpeg NVDEC/NVENC/Vulkan, ONNX Runtime CUDA (YuNet/SFace), PP-OCRv5, YOLO11 and python jobs, with progress, leases and call history.",
@@ -20,7 +20,10 @@
     "cordis.patch.yml",
     "docs",
     "README.md",
-    "README.en.md"
+    "README.en.md",
+    "bin/gputool-face",
+    "rust/face-worker/Cargo.toml",
+    "rust/face-worker/src"
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
@@ -28,7 +31,9 @@
     "build:client": "vite build --config vite.config.mts",
     "build:client:pack": "node scripts/build-client.mjs",
     "build": "npm run build:host && tsc -p tsconfig.client.json --noEmit && npm run build:client && npm run build:client:pack",
-    "test": "npm run build && node --test dist/test/*.test.js"
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "build:rust": "CARGO_HOME=\"$PWD/.cargo-home\" cargo build --release --manifest-path rust/face-worker/Cargo.toml && mkdir -p bin && cp rust/face-worker/target/release/gputool-face bin/gputool-face",
+    "test:rust": "CARGO_HOME=\"$PWD/.cargo-home\" cargo test --release --manifest-path rust/face-worker/Cargo.toml"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.4.0",

@@ -17,7 +17,7 @@ host-процесса DSH. Bash-песочница агента не видит 
 | `ffmpeg` | encode/decode/remux/trim/split/concat/frames/thumb/raw; NVENC, NVDEC (`hwaccel`/`cuvid`), zero-copy `scale_cuda` |
 | `yolo` | YOLO11 predict или трекинг BoT-SORT на CUDA (JSONL + размеченный вывод) |
 | `onnx` | универсальная сессия ONNX Runtime с провайдером CUDA (TensorRT — только если он установлен); падает вместо тихого CPU |
-| `face` | скан видео YuNet + SFace с косинусным сравнением эталонного лица |
+| `face` | скан видео YuNet + SFace с косинусным сравнением эталонного лица; `worker: auto\|rust\|python`, `batch`, `threads` |
 | `ocr` | OCR по приоритету: DeepSeek Tools API, затем локальный PP-OCRv5 (`engine: auto\|deepseek\|local`, `purpose`) |
 | `python` | запуск скрипта пайплайна с `CUDA_VISIBLE_DEVICES` и путями к GPU-библиотекам |
 | `jobs`, `job`, `cancel` | очередь, живой прогресс (процент/ETA/fps/кадры), отмена |
@@ -82,6 +82,20 @@ curl -s -X POST http://127.0.0.1:PORT/api/jobs \
 
 Плагин никогда не запускает `sudo`/`apt`: если чего-то не хватает, доктор
 показывает точную команду для ручного запуска.
+
+## Rust-воркер лиц
+
+`rust/face-worker` собирается в `bin/gputool-face` (`npm run build:rust`) и
+работает постоянным процессом: один `onnxruntime` Environment, сессии YuNet и
+SFace создаются один раз, кадры читаются из ffmpeg, ресайз идёт по
+предвычисленным весам, инференс — батчами до 8 кадров, NMS и выравнивание по
+Umeyama — на Rust. Движок держит воркер между заданиями (`faceWorker: auto`),
+сам определяет по событию `ready`, прикрепился ли CUDA EP, и при отсутствии
+бинаря или падении воркера откатывается на `python/face_worker.py`.
+
+Замер на клипе 20 с (200 кадров, 3 лица в кадре, эталон): Python — 24,2 с,
+Rust тёплый — 3,14 с, Rust холодный — 4,28 с. Без эталона Rust — 11,2 мс/кадр.
+Боксы совпадают с Python на 83 % при IoU ≥ 0,5.
 
 ## Требования и ограничения
 

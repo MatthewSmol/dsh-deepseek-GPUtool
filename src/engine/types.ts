@@ -29,6 +29,8 @@ export interface Settings {
   deepseekApiKeyEnv: string
   /** Таймаут запроса DeepSeek OCR (мс). */
   deepseekTimeoutMs: number
+  /** Бэкенд скана лиц: rust (постоянный воркер), python или авто. */
+  faceWorker: 'auto' | 'rust' | 'python'
   outputRoot: string
   torchIndexUrl: string
   gpuConcurrency: number
