@@ -128,6 +128,26 @@ npm test
 - Тесты: +5 (разбор ответа, multipart на локальный сервер, отсутствие ключа в
   тексте ошибки, лимиты файла) — всего 17.
 
+### 1.3.0 — 2026-11-23
+
+- **`ffmpeg — operation:"raw"` стал полноценным escape hatch**: весь argv
+  (`-filter_complex`, `-map`, `-c`, несколько `-i`) передаётся как есть, плюс
+  `inputs[]` (сахар `-i`), `output`, `durationSec` и живой прогресс
+  (`-progress pipe:1` не дублируется, `-y/-n` тоже). Для raw теперь работают
+  проценты, ETA, размер и запись файла в историю.
+- **Монтаж: PNG-оверлеи** — `montage.overlays[]` с `path/x/y/width/height/opacity/
+  fromSec/toSec`; PNG с альфой подаётся через `-loop 1`, кладётся поверх счёта,
+  окно показа через `enable='between(t,…)'`.
+- **Монтаж: субтитры в том же прогоне** — `montage.subtitles` (VTT/SRT/ASS,
+  `fontsDir`, `forceStyle`, `kind:"ass"`), рендер через libass после титров счёта.
+- **Голос вторым входом** — `montage.audio.tracks[]` (`path/atSec/gainDb/fades`)
+  микшируется `adelay→amix→loudnorm→AAC`; видео не перекодируется повторно.
+- Индексы входов фиксированы: **scenes → overlays → audio**; добавлен
+  `format=yuv420p` перед NVENC, doctor проверяет `overlay/subtitles/ass`.
+- Проверено: raw на GPU (`scale_cuda→unsharp→cas→fps=60`, PNG-плашка, VTT,
+  голос, `hevc_nvenc -gpu 1`) — 4 с/60 fps/AAC; монтаж на CPU — 8 с/60 fps,
+  OCR кадра подтвердил плашку и «Счёт 1:0».
+
 ### 1.2.3 — 2026-11-23
 
 - «Настройки» больше не пишут «Rust-воркер недоступен» и «ключа DeepSeek нет»,
@@ -173,6 +193,54 @@ npm test
   различие — округление билинейной интерполяции, лица находятся те же.
 - Тесты: +2 Node (доступность бинаря и поиск `libonnxruntime.so`) и 3 Rust
   (`nms`, `similarity`, `cosine`).
+
+## Сырые аргументы ffmpeg
+
+Когда нужна цепочка, которой нет в готовых операциях, передаётся весь argv
+(`operation: "raw"`). `inputs` подставляются как `-i` до `args`, прогресс и
+`-y/-n` добавляются автоматически.
+
+```json
+{
+  "operation": "raw",
+  "inputs": ["/video/a.mp4"],
+  "args": [
+    "-hwaccel", "cuda", "-hwaccel_output_format", "cuda",
+    "-i", "/video/a.mp4", "-loop", "1", "-i", "/video/plate.png", "-i", "/audio/voice.m4a",
+    "-filter_complex",
+    "[0:v]scale_cuda=1280:720,hwdownload,format=nv12,unsharp=5:5:0.8,cas=strength=0.5,fps=60[base];[1:v]format=rgba,scale=320:80[plate];[base][plate]overlay=24:24[s];[s]subtitles=filename='/video/fragments.ru.vtt':fontsdir='/usr/share/fonts/truetype/dejavu'[v]",
+    "-map", "[v]", "-map", "2:a",
+    "-c:v", "hevc_nvenc", "-gpu", "0", "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", "22",
+    "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-t", "4",
+    "-y", "/out/final.mp4"
+  ],
+  "output": "/out/final.mp4",
+  "durationSec": 4
+}
+```
+
+Проверено на GPU: 1280×720, 60 fps, HEVC NVENC, AAC.
+
+## Оверлеи и субтитры в монтаже
+
+```json
+{
+  "operation": "montage",
+  "output": "/out/final.mp4",
+  "montage": {
+    "scenes": [{ "input": "a.mp4", "durationSec": 8 }, { "input": "b.mp4", "durationSec": 8 }],
+    "upscale": { "width": 1920, "height": 1080 },
+    "fps": 60,
+    "subtitles": { "path": "fragments.ru.vtt", "fontsDir": "/usr/share/fonts/truetype/dejavu" },
+    "overlays": [{ "path": "plate.png", "x": 24, "y": 24, "width": 320, "height": 80, "opacity": 0.9 }],
+    "score": { "events": [{ "atSec": 1, "untilSec": 12, "text": "Счёт 1 : 0" }] },
+    "audio": { "tracks": [{ "path": "voice.m4a", "atSec": 2, "gainDb": -3 }] }
+  }
+}
+```
+
+Порядок входов: сцены → оверлеи → аудио; оверлей ложится поверх счёта,
+субтитры рендерятся между ними.
 
 ### Планы
 

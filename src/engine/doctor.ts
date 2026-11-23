@@ -73,6 +73,7 @@ print(json.dumps(result))
 `
 
 export class Doctor {
+  private vulkanCache: { available: boolean; hardware: boolean; detail: string; at: number } | null = null
   private cached: DoctorReport | null = null
   private cachedAt = 0
   private ffmpegCache = new Map<string, FfmpegCaps>()
@@ -166,6 +167,38 @@ export class Doctor {
       level: ffmpeg.version ? 'ok' : 'fail',
       detail: ffmpeg.version ? `${ffmpeg.path}: ${ffmpeg.version}` : `${ffmpeg.path} is missing`,
       group: 'ffmpeg',
+    })
+
+    const montageFilters = ['concat', 'drawtext', 'overlay', 'subtitles', 'amix', 'adelay', 'minterpolate', 'libplacebo', 'fruc_vulkan']
+    const missingMontage = montageFilters.filter((name) => !ffmpegGpu.filters.includes(name))
+    checks.push({
+      id: 'montage-filters',
+      title: 'Montage filters',
+      level: missingMontage.length === 0 ? 'ok' : missingMontage.includes('concat') || missingMontage.includes('drawtext') ? 'fail' : 'warn',
+      detail: missingMontage.length
+        ? `missing: ${missingMontage.join(', ')}`
+        : 'concat, drawtext, overlay, subtitles, amix, adelay, minterpolate, libplacebo, fruc_vulkan',
+      fix: 'Use the ffmpeg-nvenc build in Settings; concat, drawtext, overlay and subtitles are needed for montage.',
+      group: 'ffmpeg',
+    })
+    checks.push({
+      id: 'montage-font',
+      title: 'Montage score font',
+      level: settings.montageFontPath && existsSync(settings.montageFontPath) ? 'ok' : 'warn',
+      detail: settings.montageFontPath && existsSync(settings.montageFontPath) ? settings.montageFontPath : 'font file is not set; score events will fail',
+      fix: 'Set Settings → Montage font to a .ttf/.otf file (e.g. /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf).',
+      group: 'ffmpeg',
+    })
+    const vulkan = await this.vulkanCapability(settings)
+    checks.push({
+      id: 'montage-vulkan',
+      title: 'Montage Vulkan (EWA, fruc)',
+      level: vulkan.hardware ? 'ok' : 'warn',
+      detail: vulkan.hardware
+        ? `${vulkan.detail}: EWA и fruc_vulkan пойдут на GPU`
+        : `${vulkan.detail}: EWA идёт на CPU (llvmpipe), fruc заменяется minterpolate`,
+      fix: 'For GPU EWA/interpolation install an NVIDIA Vulkan ICD (driver components) and restart WSL.',
+      group: 'vulkan',
     })
 
     if (!python) {
@@ -278,4 +311,35 @@ export class Doctor {
     return report
   }
 
+
+  /**
+   * Возможности Vulkan для монтажа: аппаратный ICD или программный llvmpipe.
+   * Результат кэшируется на минуту — проба запускает ffmpeg.
+   */
+  async vulkanCapability(settings: Settings): Promise<{ available: boolean; hardware: boolean; detail: string }> {
+    const fresh = this.vulkanCache && Date.now() - this.vulkanCache.at < 60_000
+    if (fresh && this.vulkanCache) return this.vulkanCache
+    const path = settings.ffmpegGpuPath
+    const fallback = { available: false, hardware: false, detail: `${path} is missing`, at: Date.now() }
+    if (!existsSync(path)) {
+      this.vulkanCache = fallback
+      return fallback
+    }
+    const result = await run(
+      path,
+      ['-hide_banner', '-loglevel', 'info', '-init_hw_device', 'vulkan=vk', '-f', 'lavfi', '-i', 'color=black:s=64x64:d=0.05', '-frames:v', '1', '-f', 'null', '-'],
+      { timeoutMs: 30_000, env: gpuEnv(settings, undefined), maxOutput: 1_048_576 },
+    )
+    const output = `${result.stdout}\n${result.stderr}`
+    const software = /llvmpipe|swiftshader|software rasterizer/i.test(output)
+    const selected = /(Using device:[^\n]*|Device \d+ selected:[^\n]*)/.exec(output)?.[0]?.replace(/\s+/g, ' ').trim()
+    const value = {
+      available: result.code === 0,
+      hardware: result.code === 0 && !software,
+      detail: result.code !== 0 ? 'Vulkan init failed' : software ? `software Vulkan (${selected ?? 'llvmpipe'})` : selected ?? 'Vulkan device created',
+      at: Date.now(),
+    }
+    this.vulkanCache = value
+    return value
+  }
 }

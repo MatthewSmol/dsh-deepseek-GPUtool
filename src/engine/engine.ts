@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto'
 import { writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { readdir, stat } from 'node:fs/promises'
+import { readdir, rm, stat, writeFile as writeFilePromise } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
 import type {
   CallRecord,
@@ -29,8 +29,13 @@ import {
   buildFfmpegPlan,
   ensureOutputDir,
   ensureParent,
+  buildMontagePlan,
+  inferRawOutput,
   probeMedia,
   type FfmpegParams,
+  type FfmpegPlan,
+  type MontagePlan,
+  type MontageSceneInfo,
   type ProbeInfo,
   type ProgressState,
 } from './ffmpeg.js'
@@ -39,7 +44,7 @@ import { DeepseekOcrError, runDeepseekOcr, type DeepseekOcrResult } from './deep
 import { RustFaceWorker, rustFaceAvailable } from './face-rust.js'
 import { run, stream } from './proc.js'
 
-export const VERSION = '1.2.3'
+export const VERSION = '1.3.0'
 
 /** Метаданные личности вызывающего из MCP-инструментов или HTTP-запросов. */
 export interface SubmitMeta {
@@ -330,6 +335,27 @@ export class Engine {
         if (!existsSync(input)) throw errWithCode(`Input not found: ${input}`, 'input-missing')
       }
     }
+    if (params.operation === 'raw') {
+      for (const input of params.inputs ?? []) {
+        if (!existsSync(input)) throw errWithCode(`Input not found: ${input}`, 'input-missing')
+      }
+    }
+    if (params.operation === 'montage') {
+      const montage = params.montage
+      if (!montage?.scenes?.length) throw errWithCode('montage.scenes is required', 'invalid-args')
+      for (const scene of montage.scenes) {
+        if (!scene.input || !existsSync(scene.input)) throw errWithCode(`Scene not found: ${scene.input || '(none)'}`, 'input-missing')
+      }
+      for (const track of montage.audio?.tracks ?? []) {
+        if (!track.path || !existsSync(track.path)) throw errWithCode(`Audio track not found: ${track.path || '(none)'}`, 'input-missing')
+      }
+      for (const overlay of montage.overlays ?? []) {
+        if (!overlay.path || !existsSync(overlay.path)) throw errWithCode(`Overlay not found: ${overlay.path || '(none)'}`, 'overlay-missing')
+      }
+      if (montage.subtitles?.path && !existsSync(montage.subtitles.path)) {
+        throw errWithCode(`Subtitles not found: ${montage.subtitles.path}`, 'montage-subtitles-missing')
+      }
+    }
     const device = this.resolveDevice(params.device, false, settings.allowCpuFallback)
     const gpuBinary = device.kind === 'gpu'
     const caps = await this.caps(gpuBinary)
@@ -352,25 +378,75 @@ export class Engine {
       this.jobInput(meta, params.operation, params as unknown as Record<string, unknown>, device, [], gpuBinary ? settings.ffmpegGpuPath : settings.ffmpegPath, 'ffmpeg'),
       async (ctx) => {
         const probe = (await jobPromise) as ProbeInfo | null
-        const plan = buildFfmpegPlan(params, caps, settings, probe, self.deviceIndex(device))
+        let plan: FfmpegPlan | MontagePlan
+        if (params.operation === 'raw') {
+      for (const input of params.inputs ?? []) {
+        if (!existsSync(input)) throw errWithCode(`Input not found: ${input}`, 'input-missing')
+      }
+    }
+    if (params.operation === 'montage') {
+          const montage = params.montage as NonNullable<FfmpegParams['montage']>
+          const infos: MontageSceneInfo[] = []
+          for (const scene of montage.scenes) {
+            const info = await probeMedia(scene.input, settings).catch(() => null)
+            infos.push({
+              path: scene.input,
+              durationSec: info?.durationSec ?? null,
+              width: info?.video?.width ?? null,
+              height: info?.video?.height ?? null,
+              fps: info?.video?.fps ?? null,
+              hasAudio: Boolean(info?.audio),
+            })
+          }
+          const tempDir = join(settings.outputRoot, `.montage-${ctx.job.id}`)
+          await ensureOutputDir(tempDir)
+          const vulkan = await self.doctor.vulkanCapability(settings)
+          const montagePlan = buildMontagePlan(params, caps, settings, infos, self.deviceIndex(device), {
+            vulkanHardware: vulkan.hardware,
+            vulkanAvailable: vulkan.available,
+            fontFile: settings.montageFontPath,
+            tempDir,
+          })
+          plan = montagePlan
+          ctx.log(
+            `montage: upscaler=${montagePlan.mode.upscaler} interpolator=${montagePlan.mode.interpolator} ` +
+              `encoder=${montagePlan.usedEncoder ?? 'copy'} overlays=${montage.overlays?.length ?? 0} ` +
+              `subtitles=${montage.subtitles ? montage.subtitles.kind ?? 'subtitles' : 'none'} audioTracks=${montage.audio?.tracks?.length ?? 0}`,
+          )
+          ctx.log(`montage: vulkan ${vulkan.detail}`)
+        } else {
+          plan = buildFfmpegPlan(params, caps, settings, probe, self.deviceIndex(device))
+        }
+        if (params.operation === 'raw' && plan.totalMs == null && params.inputs?.length) {
+          const probed = await Promise.all(params.inputs.map((input) => probeMedia(input, settings).catch(() => null)))
+          const longest = Math.max(...probed.map((info) => info?.durationSec ?? 0), 0)
+          if (longest > 0) plan.totalMs = Math.round(longest * 1000)
+        }
         ctx.job.argv = plan.argv
         ctx.job.engine = plan.binary
         for (const warning of plan.warnings) ctx.log(`warning: ${warning}`)
         ctx.log(`argv: ${plan.argv.join(' ')}`)
         if (plan.concatList) {
           await ensureParent(plan.concatList.path)
-          const { writeFile } = await import('node:fs/promises')
-          await writeFile(plan.concatList.path, plan.concatList.content, 'utf8')
+          await writeFilePromise(plan.concatList.path, plan.concatList.content, 'utf8')
+        }
+        if ('tempFiles' in plan) {
+          for (const file of plan.tempFiles) {
+            await ensureParent(file.path)
+            await writeFilePromise(file.path, file.content, 'utf8')
+          }
         }
         if (params.operation === 'frames' && params.outputDir) await ensureOutputDir(params.outputDir)
         if (params.output) await ensureParent(params.output)
         if (params.operation === 'split' && params.outputDir) await ensureOutputDir(params.outputDir)
         ctx.phase('running', plan.operations.join(','))
+        const cleanupDir = 'cleanupDir' in plan ? plan.cleanupDir : null
         const state: ProgressState = { outTimeUs: null, frame: null, fps: null, speed: null, totalSize: null, done: false }
         let lastEmit = 0
         // ffmpeg получает host-индекс через -gpu/-hwaccel_device, без CUDA_VISIBLE_DEVICES.
         const env = { ...gpuEnv(settings, undefined) }
         delete env.CUDA_VISIBLE_DEVICES
+        try {
         const result = await stream(plan.binary, plan.argv, {
           env,
           signal: ctx.signal,
@@ -395,6 +471,9 @@ export class Engine {
         const collected = await self.collectOutputs(params, plan)
         for (const entry of collected) ctx.output(entry)
         ctx.log(`outputs: ${collected.map((entry) => entry.path).join(', ') || 'none'}`)
+        } finally {
+          if (cleanupDir) await rm(cleanupDir, { recursive: true, force: true }).catch(() => undefined)
+        }
       },
     )
     return record
@@ -403,7 +482,8 @@ export class Engine {
   private expectedOutputs(params: FfmpegParams): string[] {
     if (params.operation === 'split') return []
     if (params.operation === 'frames') return []
-    if (params.operation === 'raw') return params.args && params.args.includes('-y') ? [] : []
+    // raw: гард «уже существует» только при явном output; иначе пишем поверх с -y.
+    if (params.operation === 'raw') return params.output ? [params.output] : []
     return params.output ? [params.output] : []
   }
 
@@ -420,6 +500,9 @@ export class Engine {
       const matcher = new RegExp(`^${escaped}$`)
       const entries = await readdir(dir).catch(() => [] as string[])
       for (const entry of entries) if (matcher.test(entry)) paths.push(join(dir, entry))
+    } else if (params.operation === 'raw') {
+      const target = params.output ?? inferRawOutput(params.args ?? [])
+      if (target) paths.push(target)
     } else if (params.output) {
       paths.push(params.output)
     }

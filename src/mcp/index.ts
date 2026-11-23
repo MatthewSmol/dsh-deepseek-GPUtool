@@ -165,11 +165,13 @@ mcp.registerTool(
   {
     title: 'Run ffmpeg',
     description:
-      'Submit an ffmpeg job: encode/decode/remux/trim/split/concat/frames/thumb/raw. ' +
+      'Submit an ffmpeg job: encode/decode/remux/trim/split/concat/frames/thumb/raw/montage. ' +
       'GPU encoding uses NVENC when available; hwaccel/cuvid uses NVDEC. ' +
-      'Returns the job id; poll `job` for progress and percent.',
+      'montage assembles scenes in ONE run: concat + upscale (EWA via libplacebo when present) + fps ' +
+      '(fruc_vulkan only with a hardware Vulkan ICD, minterpolate otherwise) + score drawtext events + ' +
+      'voice tracks (adelay/amix) + NVENC. Poll `job` for progress and percent.',
     inputSchema: z.object({
-      operation: z.enum(['encode', 'decode', 'remux', 'trim', 'split', 'concat', 'frames', 'thumb', 'raw']),
+      operation: z.enum(['encode', 'decode', 'remux', 'trim', 'split', 'concat', 'frames', 'thumb', 'raw', 'montage']),
       input: z.string().optional(),
       inputs: z.array(z.string()).optional(),
       output: z.string().optional(),
@@ -190,6 +192,87 @@ mcp.registerTool(
       device: deviceSchema.optional(),
       hwaccel: z.enum(['off', 'auto', 'cuvid']).optional(),
       args: z.array(z.string()).optional(),
+      progress: z.boolean().optional(),
+      montage: z
+        .object({
+          scenes: z
+            .array(
+              z.object({
+                input: z.string(),
+                startSec: z.number().optional(),
+                durationSec: z.number().optional(),
+                endSec: z.number().optional(),
+              }),
+            )
+            .min(1)
+            .max(40),
+          normalize: z.object({ width: z.number(), height: z.number() }).optional(),
+          upscale: z
+            .object({
+              width: z.number(),
+              height: z.number(),
+              method: z.enum(['auto', 'ewa', 'lanczos', 'bicubic']).optional(),
+            })
+            .optional(),
+          fps: z.number().optional(),
+          interpolate: z.enum(['auto', 'fruc', 'minterpolate', 'duplicate', 'off']).optional(),
+          score: z
+            .object({
+              events: z.array(z.object({ atSec: z.number(), untilSec: z.number().optional(), text: z.string() })).min(1),
+              fontFile: z.string().optional(),
+              fontSize: z.number().optional(),
+              color: z.string().optional(),
+              box: z.boolean().optional(),
+              boxColor: z.string().optional(),
+              position: z.enum(['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center']).optional(),
+              margin: z.number().optional(),
+            })
+            .optional(),
+          subtitles: z
+            .object({
+              path: z.string(),
+              fontsDir: z.string().optional(),
+              forceStyle: z.string().optional(),
+              kind: z.enum(['subtitles', 'ass']).optional(),
+            })
+            .optional(),
+          overlays: z
+            .array(
+              z.object({
+                path: z.string(),
+                x: z.number().optional(),
+                y: z.number().optional(),
+                width: z.number().optional(),
+                height: z.number().optional(),
+                opacity: z.number().optional(),
+                fromSec: z.number().optional(),
+                toSec: z.number().optional(),
+                loop: z.boolean().optional(),
+              }),
+            )
+            .optional(),
+          audio: z
+            .object({
+              sceneAudio: z.enum(['keep', 'drop']).optional(),
+              tracks: z
+                .array(
+                  z.object({
+                    path: z.string(),
+                    atSec: z.number().optional(),
+                    gainDb: z.number().optional(),
+                    fadeInSec: z.number().optional(),
+                    fadeOutSec: z.number().optional(),
+                  }),
+                )
+                .optional(),
+              normalize: z.boolean().optional(),
+              bitrateKbps: z.number().optional(),
+            })
+            .optional(),
+          profile: z.enum(['best', 'fast']).optional(),
+          strict: z.boolean().optional(),
+        })
+        .optional(),
       label: z.string().optional(),
     }),
   },

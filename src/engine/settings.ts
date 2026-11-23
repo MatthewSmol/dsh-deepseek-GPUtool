@@ -38,6 +38,9 @@ export function defaultSettings(): Settings {
     deepseekTimeoutMs: 170_000,
     // Постоянный Rust-воркер убирает холодный старт; python — запасной путь.
     faceWorker: 'auto',
+    montageFontPath: existsSync('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf')
+      ? '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
+      : '',
     outputRoot: files.outputs(),
     torchIndexUrl: 'https://download.pytorch.org/whl/cu126',
     gpuConcurrency: 1,
@@ -70,6 +73,7 @@ const envOverrides = (): Partial<Settings> => {
   if (process.env.GPUTOOL_FACE_WORKER === 'rust' || process.env.GPUTOOL_FACE_WORKER === 'python' || process.env.GPUTOOL_FACE_WORKER === 'auto') {
     patch.faceWorker = process.env.GPUTOOL_FACE_WORKER
   }
+  if (process.env.GPUTOOL_MONTAGE_FONT) patch.montageFontPath = process.env.GPUTOOL_MONTAGE_FONT
   if (process.env.GPUTOOL_OUTPUT_ROOT) patch.outputRoot = process.env.GPUTOOL_OUTPUT_ROOT
   if (process.env.GPUTOOL_HTTP_PORT) patch.httpPort = Number(process.env.GPUTOOL_HTTP_PORT) || 0
   if (process.env.GPUTOOL_API_TOKEN) patch.apiToken = process.env.GPUTOOL_API_TOKEN

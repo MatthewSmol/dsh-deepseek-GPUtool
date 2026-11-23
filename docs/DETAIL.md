@@ -97,6 +97,20 @@ Umeyama — на Rust. Движок держит воркер между зад�
 Rust тёплый — 3,14 с, Rust холодный — 4,28 с. Без эталона Rust — 11,2 мс/кадр.
 Боксы совпадают с Python на 83 % при IoU ≥ 0,5.
 
+## Монтаж одним прогоном
+
+`operation:"montage"` собирает один `-filter_complex`: сцены нормализуются
+(`trim/setsar/scale/pad/fps`), склеиваются `concat`, затем апскейл (EWA через
+libplacebo или lanczos), интерполяция (`fruc_vulkan` только с аппаратным Vulkan,
+иначе `minterpolate`, профиль `fast` — дублирование кадров), титры счёта
+(`drawtext`), субтитры (`subtitles`/`ass`), PNG-оверлеи (`overlay` с `enable`),
+микс голоса (`adelay→amix→loudnorm`) и NVENC. Порядок входов:
+**сцены → оверлеи → аудио**. Граф передаётся аргументом `-filter_complex`
+(не все сборки знают `-filter_complex_script`).
+
+`operation:"raw"` — полный passthrough argv с автоматическим `-progress`,
+`-y/-n`, `inputs[]`-сахаром, `durationSec` и записью `output` в историю.
+
 ## Требования и ограничения
 
 - Драйвер NVIDIA и проброс CUDA в WSL: `/dev/dxg` должен быть виден

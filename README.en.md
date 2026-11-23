@@ -126,6 +126,26 @@ call history.
 - Tests: +5 (response parsing, multipart against a local server, the key never
   echoed, file limits) for 17 total.
 
+### 1.3.0 — 2026-11-23
+
+- **`ffmpeg — operation:"raw"` is now a real escape hatch**: the whole argv
+  (`-filter_complex`, `-map`, `-c`, multiple `-i`) passes through untouched, plus
+  `inputs[]` sugar, `output`, `durationSec` and live progress (`-progress pipe:1`
+  and `-y/-n` are never duplicated). Raw jobs now report percent, ETA, size and the
+  artifact in history.
+- **Montage PNG overlays** — `montage.overlays[]` with `path/x/y/width/height/
+  opacity/fromSec/toSec`; alpha PNG is looped with `-loop 1`, composited above the
+  score, visibility window via `enable='between(t,…)'`.
+- **Subtitles in the same run** — `montage.subtitles` (VTT/SRT/ASS, `fontsDir`,
+  `forceStyle`, `kind:"ass"`) through libass after the score drawtext.
+- **Voice as a second input** — `montage.audio.tracks[]` (`path/atSec/gainDb/fades`)
+  mixed with `adelay→amix→loudnorm→AAC`; video is not re-encoded twice.
+- Input order is fixed: **scenes → overlays → audio**; `format=yuv420p` added before
+  NVENC; doctor checks `overlay/subtitles/ass`.
+- Verified: raw on GPU (`scale_cuda→unsharp→cas→fps=60`, PNG plate, VTT, voice,
+  `hevc_nvenc -gpu 1`) — 4 s/60 fps/AAC; CPU montage — 8 s/60 fps, frame OCR
+  confirmed the plate and “Счёт 1:0”.
+
 ### 1.2.3 — 2026-11-23
 
 - Settings no longer claim “Rust worker is unavailable” or “no DeepSeek key” when
@@ -174,6 +194,31 @@ call history.
   difference is bilinear interpolation rounding, the same faces are found.
 - Tests: +2 Node (binary availability, `libonnxruntime.so` lookup) and 3 Rust
   (`nms`, `similarity`, `cosine`).
+
+## Raw ffmpeg arguments
+
+For chains that the preset operations do not cover, pass the whole argv with
+`operation: "raw"`. `inputs` become `-i` before `args`; progress and `-y/-n` are
+added automatically.
+
+```json
+{
+  "operation": "raw",
+  "inputs": ["/video/a.mp4"],
+  "args": ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda",
+    "-i", "/video/a.mp4", "-loop", "1", "-i", "/video/plate.png", "-i", "/audio/voice.m4a",
+    "-filter_complex", "[0:v]scale_cuda=1280:720,hwdownload,format=nv12,unsharp=5:5:0.8,cas=strength=0.5,fps=60[base];[1:v]format=rgba,scale=320:80[plate];[base][plate]overlay=24:24[s];[s]subtitles=filename='/video/fragments.ru.vtt':fontsdir='/usr/share/fonts/truetype/dejavu'[v]",
+    "-map", "[v]", "-map", "2:a", "-c:v", "hevc_nvenc", "-gpu", "0", "-c:a", "aac",
+    "-movflags", "+faststart", "-t", "4", "-y", "/out/final.mp4"],
+  "output": "/out/final.mp4", "durationSec": 4
+}
+```
+
+## Overlays and subtitles in montage
+
+`montage.subtitles` renders VTT/SRT/ASS via libass; `montage.overlays` composites
+alpha PNGs (with `x/y/width/height/opacity/fromSec/toSec`) above the score. Input
+order is scenes → overlays → audio, so voice tracks stay independent.
 
 ### Planned
 

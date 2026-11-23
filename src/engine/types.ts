@@ -31,6 +31,8 @@ export interface Settings {
   deepseekTimeoutMs: number
   /** Бэкенд скана лиц: rust (постоянный воркер), python или авто. */
   faceWorker: 'auto' | 'rust' | 'python'
+  /** Шрифт для титров счёта в монтаже. */
+  montageFontPath: string
   outputRoot: string
   torchIndexUrl: string
   gpuConcurrency: number
@@ -84,7 +86,7 @@ export interface DoctorCheck {
   /** Готовая команда/рецепт, если проверка требует действия пользователя. */
   fix?: string
   /** Машинное значение для группировки на клиенте. */
-  group: 'gpu' | 'ffmpeg' | 'onnx' | 'torch' | 'yolo' | 'ocr' | 'python'
+  group: 'gpu' | 'ffmpeg' | 'vulkan' | 'onnx' | 'torch' | 'yolo' | 'ocr' | 'python'
 }
 
 export interface DoctorReport {
