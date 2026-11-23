@@ -411,9 +411,10 @@ export function createPanel(ui: Ui): (props: any) => any {
       )
     }
 
+    // «Задачи» — только актуальная работа: выполняется и в очереди.
     const renderJobs = (): any => {
-      const jobs = state?.jobs ?? []
-      if (!jobs.length) return h('p', { className: 'gputool-empty' }, tr('jobs.empty'))
+      const jobs = (state?.jobs ?? []).filter((job) => job.status === 'running' || job.status === 'queued')
+      if (!jobs.length) return h('p', { className: 'gputool-empty' }, tr('jobs.emptyActive'))
       return h(
         'div',
         { className: 'gputool-jobs' },
@@ -482,6 +483,7 @@ export function createPanel(ui: Ui): (props: any) => any {
           ),
           h('input', { className: 'gputool-input', placeholder: tr('history.search'), value: filterText, onChange: (event: any) => setFilterText(event.target.value) }),
         ),
+        h('p', { className: 'gputool-muted' }, tr('history.limited')),
         filtered.length
           ? h(
               'table',
@@ -490,7 +492,7 @@ export function createPanel(ui: Ui): (props: any) => any {
               h(
                 'tbody',
                 null,
-                ...filtered.slice(0, 200).map((row) =>
+                ...filtered.slice(0, 10).map((row) =>
                   h(
                     'tr',
                     { key: row.key, className: 'gputool-row-click', onClick: () => setDetail(row.job?.id ?? null) },

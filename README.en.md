@@ -126,6 +126,13 @@ call history.
 - Tests: +5 (response parsing, multipart against a local server, the key never
   echoed, file limits) for 17 total.
 
+### 1.2.2 — 2026-11-23
+
+- The **Jobs** tab now lists only current work: `running` and `queued` jobs;
+  finished ones stay in History.
+- The **History** tab shows the **last 10 entries** (after search and filtering)
+  with a caption; clicking a row still opens the details.
+
 ### 1.2.1 — 2026-11-23
 
 - **Fixed: the Jobs tab crashed** — the progress component did not receive the

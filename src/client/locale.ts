@@ -3,6 +3,8 @@
 export type Dict = Record<string, string>
 
 export const en: Dict = {
+  'jobs.emptyActive': 'No running or queued jobs right now',
+  'history.limited': 'Showing the last 10 entries',
   'settings.engines': 'OCR and face engines',
   'settings.ocrEngine': 'OCR engine (auto/deepseek/local)',
   'settings.deepseekReady': 'DeepSeek key found',
@@ -116,6 +118,8 @@ export const en: Dict = {
 }
 
 export const ru: Dict = {
+  'jobs.emptyActive': 'Сейчас нет выполняющихся или ожидающих задач',
+  'history.limited': 'Показаны последние 10 записей',
   'settings.engines': 'Движки OCR и лиц',
   'settings.ocrEngine': 'OCR: движок (auto/deepseek/local)',
   'settings.deepseekReady': 'ключ DeepSeek найден',
