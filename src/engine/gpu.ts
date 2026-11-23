@@ -90,7 +90,7 @@ function hintsFor(error: string, nodes: boolean): string[] {
     hints.push('Check that /usr/lib/wsl/lib/libcuda.so.1 exists and CUDA passthrough is enabled in .wslconfig.')
   }
   if (!nodes) {
-    hints.push('/dev/dxg is missing in this process namespace, so CUDA/Vulkan devices are unavailable.')
+    hints.push('/dev/dxg is missing in this process namespace, so CUDA devices are unavailable.')
     hints.push('The DSH host plugin must run where the WSL GPU devices are visible; agent bash sandbox cannot see them.')
   }
   hints.push('CPU codecs (libx264/libx265) keep ffmpeg jobs usable while the GPU is unavailable.')

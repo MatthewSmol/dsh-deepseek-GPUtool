@@ -72,22 +72,6 @@ except Exception as exc:
 print(json.dumps(result))
 `
 
-const VULKAN_ICD_DIRS = ['/usr/share/vulkan/icd.d', '/etc/vulkan/icd.d']
-
-/** Ищет ICD Vulkan, не обращаясь к Windows-монтированиям. */
-export function vulkanIcds(): string[] {
-  const found: string[] = []
-  for (const dir of VULKAN_ICD_DIRS) {
-    try {
-      if (!existsSync(dir)) continue
-      for (const entry of readdirSync(dir)) if (entry.endsWith('.json')) found.push(join(dir, entry))
-    } catch {
-      /* о недоступном каталоге сообщает вызывающий */
-    }
-  }
-  return found
-}
-
 export class Doctor {
   private cached: DoctorReport | null = null
   private cachedAt = 0
@@ -171,9 +155,9 @@ export class Doctor {
       title: 'ffmpeg GPU build',
       level: ffmpegGpu.version ? (nvenc.length && cuvid.length ? 'ok' : 'warn') : 'fail',
       detail: ffmpegGpu.version
-        ? `${ffmpegGpu.path}: ${nvenc.length} nvenc, ${cuvid.length} cuvid, ${ffmpegGpu.filters.includes('fruc_vulkan') ? 'fruc_vulkan' : 'no fruc'}, ${ffmpegGpu.filters.includes('libplacebo') ? 'libplacebo' : 'no libplacebo'}`
+        ? `${ffmpegGpu.path}: ${nvenc.length} nvenc, ${cuvid.length} cuvid, ${ffmpegGpu.filters.includes('scale_cuda') ? 'scale_cuda' : 'no scale_cuda'}`
         : `${ffmpegGpu.path} is missing`,
-      fix: 'Point Settings → ffmpeg GPU binary to a build with NVENC/CUVID (and libplacebo/fruc_vulkan for Vulkan).',
+      fix: 'Point Settings → ffmpeg GPU binary to a build with NVENC and CUVID support.',
       group: 'ffmpeg',
     })
     checks.push({
@@ -182,35 +166,6 @@ export class Doctor {
       level: ffmpeg.version ? 'ok' : 'fail',
       detail: ffmpeg.version ? `${ffmpeg.path}: ${ffmpeg.version}` : `${ffmpeg.path} is missing`,
       group: 'ffmpeg',
-    })
-
-    const icds = vulkanIcds()
-    const vulkanTest = await this.vulkanTest(settings.ffmpegGpuPath, gpu.available)
-    checks.push({
-      id: 'vulkan-device',
-      title: 'Vulkan device',
-      level: vulkanTest.ok ? (vulkanTest.hardware ? 'ok' : 'warn') : icds.length ? 'warn' : 'fail',
-      detail: `${vulkanTest.detail}; ICD: ${icds.length ? icds.map((path) => path.split('/').pop()).join(', ') : 'none'}`,
-      fix: icds.length
-        ? 'Install a WSL Vulkan driver/ICD (mesa-vulkan-drivers, vulkan-tools) and restart WSL; then retry.'
-        : 'sudo apt install vulkan-tools mesa-vulkan-drivers (requires root; not run by the plugin).',
-      group: 'vulkan',
-    })
-    checks.push({
-      id: 'vulkan-filters',
-      title: 'Vulkan filters (libplacebo, fruc_vulkan)',
-      level: ffmpegGpu.filters.includes('libplacebo') && ffmpegGpu.filters.includes('fruc_vulkan') ? 'ok' : 'fail',
-      detail: `libplacebo=${ffmpegGpu.filters.includes('libplacebo')}, fruc_vulkan=${ffmpegGpu.filters.includes('fruc_vulkan')}`,
-      fix: 'Use the ffmpeg-nvenc build in Settings → ffmpeg GPU binary; the system build lacks fruc_vulkan.',
-      group: 'vulkan',
-    })
-    checks.push({
-      id: 'vulkaninfo',
-      title: 'vulkaninfo',
-      level: existsSync('/usr/bin/vulkaninfo') || existsSync('/usr/local/bin/vulkaninfo') ? 'ok' : 'warn',
-      detail: 'vulkaninfo is used for independent device diagnostics',
-      fix: 'sudo apt install vulkan-tools',
-      group: 'vulkan',
     })
 
     if (!python) {
@@ -323,22 +278,4 @@ export class Doctor {
     return report
   }
 
-  private async vulkanTest(path: string, gpuAvailable: boolean): Promise<{ ok: boolean; hardware: boolean; detail: string }> {
-    if (!existsSync(path)) return { ok: false, hardware: false, detail: `${path} is missing` }
-    if (!gpuAvailable) return { ok: false, hardware: false, detail: 'GPU is unavailable, so a Vulkan device cannot be created' }
-    const result = await run(
-      path,
-      ['-hide_banner', '-loglevel', 'info', '-init_hw_device', 'vulkan=vk', '-f', 'lavfi', '-i', 'color=black:s=64x64:d=0.05', '-frames:v', '1', '-f', 'null', '-'],
-      { timeoutMs: 30_000, env: gpuEnv(this.deps.settings(), undefined), maxOutput: 1_048_576 },
-    )
-    const output = `${result.stdout}\n${result.stderr}`
-    const software = /llvmpipe|swiftshader|software rasterizer/i.test(output)
-    const selected = /(Using device:[^\n]*|Device \d+ selected:[^\n]*)/.exec(output)?.[0]?.replace(/\s+/g, ' ').trim()
-    const detail = result.code !== 0
-      ? 'Vulkan init failed'
-      : software
-        ? `Vulkan работает на программном ${selected ?? 'llvmpipe'}, GPU-устройства Vulkan (VK_NV_optical_flow) нет`
-        : selected ?? 'Vulkan device created'
-    return { ok: result.code === 0, hardware: !software, detail }
-  }
 }

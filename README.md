@@ -2,7 +2,7 @@
 
 [English](README.en.md) | Русский
 
-DSH-плагин и локальный MCP-сервис для общей GPU-работы: ffmpeg NVDEC/NVENC/Vulkan,
+DSH-плагин и локальный MCP-сервис для общей GPU-работы: ffmpeg NVDEC/NVENC,
 ONNX Runtime CUDA (YuNet/SFace), PP-OCRv5, YOLO11 и GPU-скрипты. У каждой задачи
 есть живой прогресс (процент, ETA, fps), а история вызовов хранит, какая сессия её
 запустила и сколько времени это заняло.
@@ -38,9 +38,8 @@ npm test
   одном процессе. Инструменты: `status`, `probe`, `ffmpeg`, `yolo`, `onnx`, `face`,
   `ocr`, `python`, `jobs`, `job`, `cancel`, `history`, `gpu`, `setup`, `settings`;
   ресурсы `gputool://doctor|gpus|jobs|jobs/{id}|history`.
-- **ffmpeg на GPU**: NVDEC (`-hwaccel cuda`, `*_cuvid`), zero-copy `scale_cuda`,
-  NVENC (`h264/hevc/av1`, пресеты `p1–p7`, `cq`, `-tag:v hvc1`), Vulkan-путь
-  `libplacebo` (EWA Lanczos + `cas`) и `fruc_vulkan` (60 fps) из сборки
+- **ffmpeg на GPU**: NVDEC (`-hwaccel cuda`, `*_cuvid`), zero-copy `scale_cuda`
+  и NVENC (`h264/hevc/av1`, пресеты `p1–p7`, `cq`, `-tag:v hvc1`) из сборки
   `ffmpeg-nvenc`. Операции: **encode, decode, remux, trim, split, concat, frames,
   thumb, raw**; автоматический выбор кодека (NVENC → CPU-фолбэк).
 - **ONNX Runtime CUDA**: универсальный `onnx`, скан лиц **YuNet + SFace** и OCR
@@ -62,9 +61,9 @@ npm test
   «История», «Аренда», «Настройки»; матрица возможностей доктора с копируемыми
   рецептами; переключатель языка **RU / EN** (по умолчанию русский, выбор
   сохраняется в `localStorage`).
-- **Доктор возможностей**: `/dev/dxg`, nvidia-smi, NVENC/CUVID, Vulkan-устройство
-  (с распознаванием программного llvmpipe), фильтры Vulkan, ONNX Runtime и cuDNN,
-  torch CUDA, ultralytics, модели YOLO/OCR/лиц — с точными командами исправления.
+- **Доктор возможностей**: `/dev/dxg`, nvidia-smi, NVENC/CUVID, `scale_cuda`,
+  ONNX Runtime и cuDNN, torch CUDA, ultralytics, модели YOLO/OCR/лиц — с точными
+  командами исправления.
 - **setup**: изолированный venv `$DSH_HOME/gputool/venv` (uv, Python 3.12) —
   torch с CUDA-индекса, cuDNN, `onnxruntime-gpu`, `ultralytics`, `lap`,
   `opencv-python-headless`, `numpy`; проверка `torch.cuda.is_available()`.
@@ -80,9 +79,9 @@ npm test
 - `CUDA_VISIBLE_DEVICES` для ffmpeg ломал `-hwaccel_device`; теперь устройство
   задаётся только `-gpu`/`-hwaccel_device`.
 - `out_time_ms` в ffmpeg — микросекунды: процент и ETA больше не «прыгают».
-- Vulkan: `upscaler=ewa_lanczos4sharp` недоступен → `ewa_lanczossharp`, а
-  `fruc_vulkan` принимает `fps=`; цепочка собрана как
-  `format=nv12,hwupload,libplacebo,…,hwdownload,format=nv12`.
+- Поддержка Vulkan (`libplacebo` + `fruc_vulkan`) удалена: в WSL без NVIDIA-ICD
+  устройство поднималось на программном llvmpipe, интерполяция падала на
+  отсутствии `VK_NV_optical_flow`. Остались CUDA-пути NVDEC/NVENC/`scale_cuda`.
 - `LD_LIBRARY_PATH` строился по зашитому `python3.12`; теперь site-packages
   находится через glob — cuDNN из venv подхватывается.
 - TensorRT в списке провайдеров падал без библиотек — по умолчанию CUDA → CPU.
@@ -92,12 +91,18 @@ npm test
   перезагрузки.
 
 **Известные ограничения**
-
-- Vulkan в WSL без NVIDIA-ICD поднимается на llvmpipe; `fruc_vulkan` требует
-  расширение `VK_NV_optical_flow` и на программном устройстве недоступен.
 - Словарь `ppocrv5_dict.txt` в `ocr-ru` не кириллический (851 символ) — нужен
   корректный словарь PP-OCRv5 для чтения русского табло.
 - Браузерная панель визуально не проверялась (GUI требует token-URL).
+
+### 1.0.1 — 2026-11-23
+
+- Удалена поддержка Vulkan: фильтры `libplacebo`/`fruc_vulkan`, параметр
+  `vulkan` в `ffmpeg`, требование GPU для него и три проверки доктора
+  (`vulkan-device`, `vulkan-filters`, `vulkaninfo`). Причина: на хосте нет
+  GPU-ICD, цепочка работала на llvmpipe, а интерполяция недоступна без
+  `VK_NV_optical_flow`. Интерфейс: русский по умолчанию + английский (RU/EN).
+- README: русская и [английская](README.en.md) версии с общей историей.
 
 ### Планы
 

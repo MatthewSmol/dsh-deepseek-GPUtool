@@ -1,7 +1,7 @@
 # GPU tool
 
 Локальный MCP-сервис и панель в сайдбаре DSH для общей GPU-работы: ffmpeg
-(NVDEC, NVENC, Vulkan), ONNX Runtime CUDA, скан лиц YuNet/SFace, OCR PP-OCRv5,
+(NVDEC, NVENC), ONNX Runtime CUDA, скан лиц YuNet/SFace, OCR PP-OCRv5,
 YOLO11 и произвольные GPU-скрипты Python.
 
 GPU-процессы запускает MCP-сервер плагина, поэтому они наследуют GPU-устройства
@@ -14,7 +14,7 @@ host-процесса DSH. Bash-песочница агента не видит 
 |---|---|
 | `status` | GPU, сводка доктора, очередь, аренда, адреса HTTP/MCP |
 | `probe` | метаданные медиафайла через ffprobe |
-| `ffmpeg` | encode/decode/remux/trim/split/concat/frames/thumb/raw; NVENC, NVDEC (`hwaccel`/`cuvid`), `vulkan: true` включает libplacebo EWA + cas + `fruc_vulkan` 60 fps |
+| `ffmpeg` | encode/decode/remux/trim/split/concat/frames/thumb/raw; NVENC, NVDEC (`hwaccel`/`cuvid`), zero-copy `scale_cuda` |
 | `yolo` | YOLO11 predict или трекинг BoT-SORT на CUDA (JSONL + размеченный вывод) |
 | `onnx` | универсальная сессия ONNX Runtime с провайдером CUDA (TensorRT — только если он установлен); падает вместо тихого CPU |
 | `face` | скан видео YuNet + SFace с косинусным сравнением эталонного лица |
@@ -80,18 +80,18 @@ curl -s -X POST http://127.0.0.1:PORT/api/jobs \
 (устройство выбирается через `CUDA_VISIBLE_DEVICES`), `onnxruntime-gpu 1.32`
 с `CUDAExecutionProvider`.
 
-Плагин никогда не запускает `sudo`/`apt`. Для Vulkan выдаётся точная команда
-(`sudo apt install vulkan-tools mesa-vulkan-drivers`).
+Плагин никогда не запускает `sudo`/`apt`: если чего-то не хватает, доктор
+показывает точную команду для ручного запуска.
 
 ## Требования и ограничения
 
 - Драйвер NVIDIA и проброс CUDA в WSL: `/dev/dxg` должен быть виден
   host-процессу DSH.
-- Сборка ffmpeg с NVENC/CUVID; для `fruc_vulkan` и `libplacebo` нужна сборка
-  `ffmpeg-nvenc` (задаётся в настройках).
+- Сборка ffmpeg с NVENC/CUVID (например `ffmpeg-nvenc`, задаётся в настройках).
 - ONNX Runtime CUDA требует cuDNN 9; его приносит CUDA-колесо torch.
-- Vulkan-фильтры зависят от Vulkan ICD для GPU в WSL; доктор сообщает точную
-  причину и никогда не подменяет запрошенный Vulkan тихим CPU.
+- Поддержки Vulkan нет: в WSL без NVIDIA-ICD устройство поднималось на llvmpipe
+  (ПО), а интерполяция `fruc_vulkan` требует `VK_NV_optical_flow`, поэтому путь
+  удалён. GPU-работа идёт через CUDA (NVDEC/NVENC/`scale_cuda`).
 - API доступен только на loopback и защищён токеном. Задачи выполняются с
   правами пользователя хоста вне файловой песочницы агента; отправлять их
   должны только доверенные локальные вызывающие.

@@ -283,11 +283,7 @@ export class Engine {
         if (!existsSync(input)) throw errWithCode(`Input not found: ${input}`, 'input-missing')
       }
     }
-    const requireGpu = params.vulkan === true
-    const device = this.resolveDevice(params.device, requireGpu, settings.allowCpuFallback)
-    if (params.vulkan === true && device.kind === 'cpu') {
-      throw errWithCode('Vulkan interpolation requires a GPU device', 'gpu-unavailable')
-    }
+    const device = this.resolveDevice(params.device, false, settings.allowCpuFallback)
     const gpuBinary = device.kind === 'gpu'
     const caps = await this.caps(gpuBinary)
     const outputs = this.expectedOutputs(params)

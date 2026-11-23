@@ -27,7 +27,6 @@ export interface FfmpegParams {
   overwrite?: boolean
   device?: 'auto' | number | 'cpu'
   hwaccel?: 'off' | 'auto' | 'cuvid'
-  vulkan?: boolean
   args?: string[]
 }
 
@@ -142,8 +141,6 @@ export interface FfmpegPlan {
   argv: string[]
   totalMs: number | null
   warnings: string[]
-  /** Пометка о программном Vulkan (llvmpipe) — GPU-эффектов не будет. */
-  softwareVulkan: boolean
   usedEncoder: string | null
   usedDecoder: string | null
   operations: string[]
@@ -152,26 +149,6 @@ export interface FfmpegPlan {
 
 function seconds(value: number | undefined): string {
   return String(Math.max(0, value ?? 0))
-}
-
-/** Дополнительная цепочка Vulkan-фильтров для апскейла и интерполяции. */
-function vulkanChain(params: FfmpegParams, fps: number, caps: FfmpegCaps): string[] {
-  const parts: string[] = ['format=nv12', 'hwupload']
-  const size = params.scale ? params.scale.split(/[:x]/) : []
-  const width = Number(size[0])
-  const height = Number(size[1])
-  if (Number(width) > 0 && Number(height) > 0) {
-    parts.push(`libplacebo=w=${width}:h=${height}:upscaler=ewa_lanczossharp:antiringing=0.7`)
-  } else {
-    parts.push('libplacebo=upscaler=ewa_lanczossharp:antiringing=0.7')
-  }
-  parts.push('hwdownload', 'format=nv12')
-  if (fps > 0 && caps.filters.includes('fruc_vulkan')) {
-    // fruc_vulkan работает с Vulkan-кадрами и требует NV optical flow.
-    parts.push('hwupload', `fruc_vulkan=fps=${fps}`, 'hwdownload', 'format=nv12')
-  }
-  parts.push('cas=strength=0.55')
-  return parts
 }
 
 /** Собирает полный вызов ffmpeg для одной операции. */
@@ -187,13 +164,6 @@ export function buildFfmpegPlan(
   const overwrite = params.overwrite === true
   const base = ['-hide_banner', '-nostdin', '-progress', 'pipe:1', '-nostats', overwrite ? '-y' : '-n']
   const isGpu = deviceIndex !== null
-  const needsVulkan = params.vulkan === true
-  const vulkanAvailable = caps.filters.includes('libplacebo') && caps.filters.includes('fruc_vulkan')
-  if (needsVulkan && !vulkanAvailable) {
-    warnings.push('fruc_vulkan/libplacebo are unavailable in this ffmpeg build; Vulkan interpolation is skipped.')
-  }
-  const vulkan = needsVulkan && vulkanAvailable
-
   const audioArgs = (): string[] => {
     if (params.audio === 'none') return ['-an']
     if (params.audio === 'aac') return ['-c:a', 'aac', '-b:a', '192k']
@@ -231,10 +201,8 @@ export function buildFfmpegPlan(
   }
 
   const vfFilter = (): string[] => {
-    const chain: string[] = []
-    if (vulkan) chain.push(...vulkanChain(params, params.fps ?? 0, caps))
-    else if (params.scale) chain.push(`scale=${params.scale.replace('x', ':')}`)
-    return chain.length ? ['-vf', chain.join(',')] : []
+    if (!params.scale) return []
+    return ['-vf', `scale=${params.scale.replace('x', ':')}`]
   }
 
   let argv: string[] = []
@@ -250,9 +218,8 @@ export function buildFfmpegPlan(
       if (!params.output) throw Object.assign(new Error('output is required'), { code: 'invalid-args' })
       const picked = pickEncoder()
       usedEncoder = picked.used
-      if (vulkan) argv.push('-init_hw_device', 'vulkan=vk', '-filter_hw_device', 'vk')
       argv.push(...base, ...inputArgs(params.input), ...vfFilter())
-      if (params.fps && !vulkan) argv.push('-r', String(params.fps))
+      if (params.fps) argv.push('-r', String(params.fps))
       argv.push(...picked.args, ...audioArgs(), '-movflags', '+faststart', params.output)
       operations.push('encode')
       break
@@ -363,7 +330,6 @@ export function buildFfmpegPlan(
     argv,
     totalMs,
     warnings,
-    softwareVulkan: vulkan,
     usedEncoder,
     usedDecoder,
     operations,

@@ -34,8 +34,8 @@ test('parses compute processes', () => {
 test('parses ffmpeg listing lines', () => {
   const encoders = parseListing(' V....D h264_nvenc           NVIDIA NVENC H.264 encoder (codec h264)\n V..... libx264              libx264 (codec h264)', 'encoders')
   assert.deepEqual(encoders, ['h264_nvenc', 'libx264'])
-  const filters = parseListing(' TS cas               V->V       Contrast Adaptive Sharpen.\n .. libplacebo        N->V       Apply various GPU filters', 'filters')
-  assert.deepEqual(filters, ['cas', 'libplacebo'])
+  const filters = parseListing(' TS cas               V->V       Contrast Adaptive Sharpen.\n T.. scale_cuda          V->V       CUDA hardware-accelerated scaling filter', 'filters')
+  assert.deepEqual(filters, ['cas', 'scale_cuda'])
 })
 
 test('progress lines use microseconds and percent math stays stable', () => {
@@ -58,8 +58,8 @@ const caps: FfmpegCaps = {
   version: 'ffmpeg test',
   encoders: ['h264_nvenc', 'hevc_nvenc', 'libx264', 'libx265'],
   decoders: ['hevc_cuvid', 'h264_cuvid'],
-  filters: ['libplacebo', 'fruc_vulkan', 'cas', 'scale_cuda'],
-  hwaccels: ['cuda', 'vulkan'],
+  filters: ['cas', 'scale_cuda'],
+  hwaccels: ['cuda', 'cuvid'],
 }
 
 test('plans a GPU encode with NVENC and hvc1 tag', () => {
@@ -78,12 +78,6 @@ test('falls back to a CPU encoder and records the warning', () => {
   assert.ok(plan.warnings.some((warning) => warning.includes('libx264')))
 })
 
-test('requires the fruc-capable build for vulkan interpolation', () => {
-  const plan = buildFfmpegPlan({ operation: 'encode', input: '/in.mp4', output: '/out.mp4', codec: 'hevc', vulkan: true, fps: 60 }, caps, defaultSettings(), null, 0)
-  const filter = plan.argv[plan.argv.indexOf('-vf') + 1]
-  assert.ok(filter.includes('libplacebo'))
-  assert.ok(filter.includes('fruc_vulkan'))
-})
 
 test('split plans a stream-copy segmenter and rejects missing patterns', () => {
   const plan = buildFfmpegPlan({ operation: 'split', input: '/in.mp4', output: '/out/seg-%03d.mp4', segmentSec: 4 }, caps, defaultSettings(), { durationSec: 12, format: null, sizeBytes: null, video: null, audio: null }, 0)

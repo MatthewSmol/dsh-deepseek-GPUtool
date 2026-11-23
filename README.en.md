@@ -2,7 +2,7 @@
 
 English | [Русский](README.md)
 
-A DSH plugin and local MCP service for shared GPU work: ffmpeg NVDEC/NVENC/Vulkan,
+A DSH plugin and local MCP service for shared GPU work: ffmpeg NVDEC/NVENC,
 ONNX Runtime CUDA (YuNet/SFace), PP-OCRv5, YOLO11 and GPU scripts. Every job has
 live progress (percent, ETA, fps), and the call history records which session
 started it and how long it took.
@@ -39,10 +39,9 @@ call history.
   `ocr`, `python`, `jobs`, `job`, `cancel`, `history`, `gpu`, `setup`, `settings`;
   resources `gputool://doctor|gpus|jobs|jobs/{id}|history`.
 - **ffmpeg on the GPU**: NVDEC (`-hwaccel cuda`, `*_cuvid`), zero-copy
-  `scale_cuda`, NVENC (`h264/hevc/av1`, `p1–p7`, `cq`, `-tag:v hvc1`), and a
-  Vulkan path with `libplacebo` (EWA Lanczos + `cas`) and `fruc_vulkan` (60 fps)
-  from the `ffmpeg-nvenc` build. Operations: **encode, decode, remux, trim,
-  split, concat, frames, thumb, raw**; automatic codec choice (NVENC → CPU).
+  `scale_cuda` and NVENC (`h264/hevc/av1`, `p1–p7`, `cq`, `-tag:v hvc1`) from the
+  `ffmpeg-nvenc` build. Operations: **encode, decode, remux, trim, split,
+  concat, frames, thumb, raw**; automatic codec choice (NVENC → CPU).
 - **ONNX Runtime CUDA**: generic `onnx`, **YuNet + SFace** face scan and
   **PP-OCRv5** OCR (detection + recognition) through `CUDAExecutionProvider`,
   failing instead of silently using CPU when `requireGpu` is set.
@@ -61,9 +60,9 @@ call history.
 - **Panel** (React + minified Vite IIFE): Overview, Jobs, History, Leases and
   Settings tabs; a capability matrix with copyable fixes; an **RU / EN** language
   switch (Russian by default, the choice persists in `localStorage`).
-- **Capability doctor**: `/dev/dxg`, nvidia-smi, NVENC/CUVID, the Vulkan device
-  (recognising software llvmpipe), Vulkan filters, ONNX Runtime and cuDNN, torch
-  CUDA, ultralytics, and the YOLO/OCR/face models — each with an exact fix.
+- **Capability doctor**: `/dev/dxg`, nvidia-smi, NVENC/CUVID, `scale_cuda`,
+  ONNX Runtime and cuDNN, torch CUDA, ultralytics, and the YOLO/OCR/face models —
+  each with an exact fix.
 - **setup**: an isolated venv `$DSH_HOME/gputool/venv` (uv, Python 3.12) with
   CUDA torch, cuDNN, `onnxruntime-gpu`, `ultralytics`, `lap`,
   `opencv-python-headless` and `numpy`, verified with `torch.cuda.is_available()`.
@@ -80,9 +79,9 @@ call history.
 - `CUDA_VISIBLE_DEVICES` for ffmpeg broke `-hwaccel_device`; the device is now
   selected only through `-gpu`/`-hwaccel_device`.
 - `out_time_ms` is in microseconds — percent and ETA no longer jump.
-- Vulkan: `ewa_lanczos4sharp` does not exist (now `ewa_lanczossharp`) and
-  `fruc_vulkan` takes its own `fps=`; the chain is
-  `format=nv12,hwupload,libplacebo,…,hwdownload,format=nv12`.
+- Vulkan support (`libplacebo` + `fruc_vulkan`) was removed: in WSL without an
+  NVIDIA ICD the device ran on software llvmpipe and interpolation failed on the
+  missing `VK_NV_optical_flow`. The CUDA paths (NVDEC/NVENC/`scale_cuda`) remain.
 - `LD_LIBRARY_PATH` assumed `python3.12`; site-packages is discovered instead, so
   cuDNN from the venv is found.
 - TensorRT in the provider list failed without its libraries — providers now
@@ -93,12 +92,18 @@ call history.
   works without a reload.
 
 **Known limitations**
-
-- Vulkan in WSL without an NVIDIA ICD runs on llvmpipe; `fruc_vulkan` needs
-  `VK_NV_optical_flow` and cannot run on a software device.
 - The `ppocrv5_dict.txt` shipped in `ocr-ru` is not a Cyrillic vocabulary
   (851 entries); a proper PP-OCRv5 dictionary is needed for the Russian board.
 - The browser panel was not verified visually (the GUI requires a token URL).
+
+### 1.0.1 — 2026-11-23
+
+- Removed Vulkan support: the `libplacebo`/`fruc_vulkan` filters, the `vulkan`
+  ffmpeg option, its GPU requirement, and three doctor checks (`vulkan-device`,
+  `vulkan-filters`, `vulkaninfo`). Reason: the host has no GPU ICD, the chain ran
+  on llvmpipe, and interpolation needs `VK_NV_optical_flow`. Interface: Russian by
+  default plus English (RU/EN).
+- README in Russian and English, sharing one changelog.
 
 ### Planned
 

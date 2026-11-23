@@ -5,7 +5,7 @@
  * Отдаёт движок GPU-задач по Model Context Protocol (stdio) и поднимает в этом
  * же процессе loopback HTTP API для прокси панели DSH и внешних инструментов.
  * GPU-процессы запускает именно этот процесс: он работает в среде хоста DSH,
- * где доступны /dev/dxg, NVENC/CUVID и Vulkan.
+ * где доступны /dev/dxg, NVENC и CUVID.
  */
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/server'
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
@@ -55,7 +55,7 @@ const mcp = new McpServer(
   { name: 'gputool', version: VERSION },
   {
     instructions:
-      'GPU tool: shared ffmpeg (NVDEC/NVENC/Vulkan), ONNX Runtime CUDA, YuNet/SFace, PP-OCRv5 OCR, YOLO11 and python jobs on the local GPUs. ' +
+      'GPU tool: shared ffmpeg (NVDEC/NVENC), ONNX Runtime CUDA, YuNet/SFace, PP-OCRv5 OCR, YOLO11 and python jobs on the local GPUs. ' +
       'Submitting a job returns its id immediately; poll `job` for live progress, percent and ETA, and `history` for previous calls. ' +
       'Pass label to describe the intended work. GPU-required tools fail with gpu-unavailable instead of silently running on CPU.',
   },
@@ -166,7 +166,7 @@ mcp.registerTool(
     title: 'Run ffmpeg',
     description:
       'Submit an ffmpeg job: encode/decode/remux/trim/split/concat/frames/thumb/raw. ' +
-      'GPU encoding uses NVENC when available; hwaccel/cuvid uses NVDEC; vulkan=true enables libplacebo EWA upscale and fruc_vulkan 60 fps interpolation. ' +
+      'GPU encoding uses NVENC when available; hwaccel/cuvid uses NVDEC. ' +
       'Returns the job id; poll `job` for progress and percent.',
     inputSchema: z.object({
       operation: z.enum(['encode', 'decode', 'remux', 'trim', 'split', 'concat', 'frames', 'thumb', 'raw']),
@@ -189,7 +189,6 @@ mcp.registerTool(
       overwrite: z.boolean().optional(),
       device: deviceSchema.optional(),
       hwaccel: z.enum(['off', 'auto', 'cuvid']).optional(),
-      vulkan: z.boolean().optional(),
       args: z.array(z.string()).optional(),
       label: z.string().optional(),
     }),
@@ -414,7 +413,7 @@ mcp.registerTool(
     title: 'GPU runtime setup',
     description:
       'Check capabilities or install the GPU runtime into the plugin venv: install-runtime (torch cu126 + onnxruntime-gpu + ultralytics), ' +
-      'install-torch-cuda, install-onnx-gpu, refresh-doctor. The plugin never runs apt; Vulkan tools are reported with the exact command.',
+      'install-torch-cuda, install-onnx-gpu, refresh-doctor. The plugin never runs apt.',
     inputSchema: z.object({
       action: z.enum(['check', 'refresh-doctor', 'install-runtime', 'install-torch-cuda', 'install-onnx-gpu', 'refresh-ffmpeg']),
       label: z.string().optional(),

@@ -74,7 +74,7 @@ export interface DoctorCheck {
   /** Готовая команда/рецепт, если проверка требует действия пользователя. */
   fix?: string
   /** Машинное значение для группировки на клиенте. */
-  group: 'gpu' | 'ffmpeg' | 'vulkan' | 'onnx' | 'torch' | 'yolo' | 'ocr' | 'python'
+  group: 'gpu' | 'ffmpeg' | 'onnx' | 'torch' | 'yolo' | 'ocr' | 'python'
 }
 
 export interface DoctorReport {
