@@ -39,7 +39,7 @@ import { DeepseekOcrError, runDeepseekOcr, type DeepseekOcrResult } from './deep
 import { RustFaceWorker, rustFaceAvailable } from './face-rust.js'
 import { run, stream } from './proc.js'
 
-export const VERSION = '1.2.2'
+export const VERSION = '1.2.3'
 
 /** Метаданные личности вызывающего из MCP-инструментов или HTTP-запросов. */
 export interface SubmitMeta {

@@ -126,6 +126,13 @@ call history.
 - Tests: +5 (response parsing, multipart against a local server, the key never
   echoed, file limits) for 17 total.
 
+### 1.2.3 — 2026-11-23
+
+- Settings no longer claim “Rust worker is unavailable” or “no DeepSeek key” when
+  the plugin server is still an older build without `capabilities`: it now shows a
+  neutral “no data from the server” with a hint to restart DSH.
+- The Rust worker reason and binary path appear in the badge tooltip.
+
 ### 1.2.2 — 2026-11-23
 
 - The **Jobs** tab now lists only current work: `running` and `queued` jobs;

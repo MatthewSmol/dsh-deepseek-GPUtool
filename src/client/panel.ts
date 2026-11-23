@@ -589,9 +589,11 @@ export function createPanel(ui: Ui): (props: any) => any {
               null,
               h('code', null, state?.capabilities?.ocr.engine ?? settings.ocrEngine ?? 'auto'),
               ' · ',
-              state?.capabilities?.ocr.deepseekKeyConfigured
-                ? h('span', { className: 'gputool-tag gputool-tag-ok' }, tr('settings.deepseekReady'))
-                : h('span', { className: 'gputool-tag gputool-tag-warn' }, tr('settings.deepseekMissing')),
+              state?.capabilities?.ocr
+                ? state.capabilities.ocr.deepseekKeyConfigured
+                  ? h('span', { className: 'gputool-tag gputool-tag-ok' }, tr('settings.deepseekReady'))
+                  : h('span', { className: 'gputool-tag gputool-tag-warn' }, tr('settings.deepseekMissing'))
+                : h('span', { className: 'gputool-tag', title: tr('settings.staleHint') }, tr('settings.stale')),
             ),
           ),
           h('div', { className: 'gputool-kv' }, h('span', null, tr('settings.ocrKeyEnv')), h('code', null, state?.capabilities?.ocr.apiKeyEnv ?? settings.deepseekApiKeyEnv ?? 'DEEPSEEK_API_KEY')),
@@ -606,9 +608,11 @@ export function createPanel(ui: Ui): (props: any) => any {
               null,
               h('code', null, state?.capabilities?.face.mode ?? settings.faceWorker ?? 'auto'),
               ' · ',
-              state?.capabilities?.face.rust.ok
-                ? h('span', { className: 'gputool-tag gputool-tag-ok' }, tr('settings.rustReady'))
-                : h('span', { className: 'gputool-tag gputool-tag-warn', title: state?.capabilities?.face.rust.reason ?? '' }, tr('settings.rustMissing')),
+              state?.capabilities?.face
+                ? state.capabilities.face.rust.ok
+                  ? h('span', { className: 'gputool-tag gputool-tag-ok', title: state.capabilities.face.rust.binary }, tr('settings.rustReady'))
+                  : h('span', { className: 'gputool-tag gputool-tag-warn', title: state.capabilities.face.rust.reason }, tr('settings.rustMissing'))
+                : h('span', { className: 'gputool-tag', title: tr('settings.staleHint') }, tr('settings.stale')),
             ),
           ),
         ),

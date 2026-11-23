@@ -3,6 +3,8 @@
 export type Dict = Record<string, string>
 
 export const en: Dict = {
+  'settings.stale': 'no data from the server',
+  'settings.staleHint': 'The plugin server runs an older version: restart DSH to see the real engine state',
   'jobs.emptyActive': 'No running or queued jobs right now',
   'history.limited': 'Showing the last 10 entries',
   'settings.engines': 'OCR and face engines',
@@ -118,6 +120,8 @@ export const en: Dict = {
 }
 
 export const ru: Dict = {
+  'settings.stale': 'нет данных от сервера',
+  'settings.staleHint': 'Сервер плагина старой версии: перезапустите DSH, чтобы увидеть фактическое состояние движков',
   'jobs.emptyActive': 'Сейчас нет выполняющихся или ожидающих задач',
   'history.limited': 'Показаны последние 10 записей',
   'settings.engines': 'Движки OCR и лиц',
