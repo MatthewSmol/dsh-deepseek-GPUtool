@@ -25,7 +25,12 @@ export function ballBinary(): string {
 export function ballModelPath(settings: Settings, requested?: string): string {
   if (requested) return requested
   if (settings.ballModelPath) return settings.ballModelPath
-  return join(settings.modelsDir, 'ball', 'tracknetv2.onnx')
+  const dir = join(settings.modelsDir, 'ball')
+  for (const name of ['blurball_tt.onnx', 'tracknetv3_badminton.onnx', 'tracknetv2.onnx']) {
+    const candidate = join(dir, name)
+    if (existsSync(candidate)) return candidate
+  }
+  return join(dir, 'tracknetv2.onnx')
 }
 
 /** Готов ли путь: бинарник, ORT-библиотека и файл модели. */
@@ -44,6 +49,10 @@ export function ballAvailable(
 
 export interface BallParams {
   source?: string
+  /** Одно изображение: режим захвата мяча на картинке. */
+  image?: string
+  /** Несколько изображений (1–8) для временного контекста. */
+  images?: string[]
   model?: string
   outputDir?: string
   fps?: number
@@ -60,12 +69,15 @@ export interface BallParams {
   frames?: number
   inputWidth?: number
   inputHeight?: number
+  bgMode?: string
   device?: 'auto' | number | 'cpu'
   overwrite?: boolean
 }
 
 export interface BallConfig {
   source: string
+  images?: string[]
+  bgMode?: string
   outputDir: string
   model: string
   fps?: number
@@ -91,6 +103,13 @@ export interface BallConfig {
 
 export interface BallResult {
   engine: 'rust'
+  x?: number
+  y?: number
+  confidence?: number
+  visible?: boolean
+  width?: number
+  height?: number
+  annotated?: string | null
   device: string
   providers: string[]
   frames: number
@@ -128,6 +147,8 @@ export function buildBallConfig(
   }
   return {
     source,
+    images: params.images,
+    bgMode: params.bgMode,
     outputDir,
     model,
     fps: params.fps,

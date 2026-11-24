@@ -60,7 +60,7 @@ import {
 } from './upscale-rust.js'
 import { run, stream } from './proc.js'
 
-export const VERSION = '1.6.3'
+export const VERSION = '1.7.0'
 
 /** Диагностика ffmpeg для /api/state: что реально доступно в бинаре. */
 export function buildFfmpegDiagnostics(caps: FfmpegCaps, gpu: boolean): FfmpegDiagnostics {
@@ -641,9 +641,11 @@ export class Engine {
   /** Трекинг мяча настольного тенниса: ONNX TrackNet/WASB + разметка видео. */
   async submitBall(params: BallParams, meta: SubmitMeta): Promise<JobRecord> {
     const settings = this.settingsStore.get()
-    const source = params.source
-    if (!source) throw errWithCode('source is required', 'invalid-args')
+    const image = params.image
+    const source = image ?? params.source
+    if (!source) throw errWithCode('source or image is required', 'invalid-args')
     if (!existsSync(source)) throw errWithCode(`Source not found: ${source}`, 'input-missing')
+    if (image) params = { ...params, images: params.images?.length ? params.images : [image], annotate: params.annotate ?? true }
     const availability = ballAvailable(settings, params.model)
     if (!availability.ok) {
       const code = availability.reason.startsWith('model not found') ? 'ball-model-missing' : 'ball-worker-missing'
@@ -651,8 +653,8 @@ export class Engine {
     }
     const device = this.resolveDevice(params.device, false, true)
     const deviceKind = params.device === 'cpu' ? 'cpu' : device.kind === 'gpu' ? 'cuda' : 'cpu'
-    const outputDir = params.outputDir ?? join(settings.outputRoot, `ball-${Date.now()}`)
-    if (params.annotate !== false && !params.overwrite) {
+    const outputDir = params.outputDir ?? join(settings.outputRoot, `${image ? 'ball-image' : 'ball'}-${Date.now()}`)
+    if (!image && params.annotate !== false && !params.overwrite) {
       const video = join(outputDir, 'ball.mp4')
       if (existsSync(video)) throw errWithCode(`Output already exists: ${video}`, 'output-exists')
     }
@@ -669,6 +671,23 @@ export class Engine {
         ctx.phase('tracking', 'ball')
         const worker = await self.ensureBallWorker(this.deviceIndex(device) ?? undefined, settings)
         const result = await worker.run(config, ctx)
+        if (image) {
+          ctx.log(
+            `ball_image: visible=${result.visible} x=${result.x?.toFixed(1)} y=${result.y?.toFixed(1)} ` +
+              `conf=${result.confidence?.toFixed(3)} device=${result.device}`,
+          )
+          const jsonPath = join(outputDir, 'ball_image.json')
+          await writeFilePromise(
+            jsonPath,
+            `${JSON.stringify({ x: result.x, y: result.y, confidence: result.confidence, visible: result.visible, width: result.width, height: result.height, model: result.model, annotated: result.annotated }, null, 2)}\n`,
+            'utf8',
+          )
+          for (const path of [jsonPath, result.annotated].filter((value): value is string => Boolean(value))) {
+            const info = await stat(path).catch(() => null)
+            if (info?.isFile()) ctx.output({ path, bytes: info.size, durationSec: null })
+          }
+          return
+        }
         ctx.log(
           `ball: ${result.detected}/${result.frames} кадров с мячом, device=${result.device}, ` +
             `model=${result.model.width}x${result.model.height} frames=${result.model.frames}`,

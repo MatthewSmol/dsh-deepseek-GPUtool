@@ -94,3 +94,15 @@ test('upscale target size must be even and set as width+height together', () => 
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('provider is validated and defaults to auto', () => {
+  const { dir, source, model } = fixture()
+  try {
+    const settings = { ...defaultSettings(), upscaleModelPath: model }
+    assert.equal(buildUpscaleConfig({}, settings, source, join(dir, 'out.png')).provider, 'auto')
+    assert.equal(buildUpscaleConfig({ provider: 'tensorrt' }, settings, source, join(dir, 'out.png')).provider, 'tensorrt')
+    assert.ok(buildUpscaleConfig({ provider: 'tensorrt' }, settings, source, join(dir, 'out.png')).engineCache?.includes('trt-cache'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

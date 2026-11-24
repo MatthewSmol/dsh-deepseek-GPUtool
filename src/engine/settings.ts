@@ -43,6 +43,7 @@ export function defaultSettings(): Settings {
       : '',
     upscaleModelPath: process.env.GPUTOOL_UPSCALE_MODEL ?? '',
     upscaleBatch: 8,
+    upscaleProvider: 'auto',
     upscaleCodec: 'hevc',
     upscaleQuality: 'balanced',
     ballModelPath: process.env.GPUTOOL_BALL_MODEL ?? '',

@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import test from 'node:test'
 import { ballAvailable, ballModelPath, buildBallConfig } from '../engine/ball-rust.js'
 import { defaultSettings } from '../engine/settings.js'
@@ -21,7 +21,8 @@ function fixture(): { dir: string; source: string; model: string } {
 
 test('ball model path falls back to modelsDir/ball', () => {
   const settings = { ...defaultSettings(), ballModelPath: '' }
-  assert.equal(ballModelPath(settings), join(settings.modelsDir, 'ball', 'tracknetv2.onnx'))
+  const fallback = ballModelPath(settings)
+  assert.ok(['blurball_tt.onnx', 'tracknetv3_badminton.onnx', 'tracknetv2.onnx'].includes(basename(fallback)), fallback)
   assert.equal(ballModelPath(settings, '/m/custom.onnx'), '/m/custom.onnx')
   assert.equal(ballModelPath({ ...settings, ballModelPath: '/m/preset.onnx' }), '/m/preset.onnx')
 })

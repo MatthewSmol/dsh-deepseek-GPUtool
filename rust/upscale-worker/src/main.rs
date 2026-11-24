@@ -48,6 +48,12 @@ struct Config {
     ffprobe_path: Option<String>,
     #[serde(default)]
     overwrite: Option<bool>,
+    /// auto | cuda | tensorrt: провайдер инференса.
+    #[serde(default)]
+    provider: Option<String>,
+    /// Каталог кэша TensorRT engine.
+    #[serde(default)]
+    engine_cache: Option<String>,
     /// Целевая ширина результата (должна быть чётной; модель всегда x2).
     #[serde(default)]
     width: Option<u32>,
@@ -132,24 +138,89 @@ fn emit_progress(
 
 struct Upscaler {
     session: Session,
+    provider: String,
 }
 
 impl Upscaler {
-    fn load(model: &Path) -> Result<Self> {
+    fn load(model: &Path, provider: Option<&str>, engine_cache: Option<String>) -> Result<Self> {
         if !model.is_file() {
             bail!("model not found: {}", model.display());
         }
         let env = ort::init().build().context("init onnxruntime")?;
-        let builder = Session::builder(&env)?
-            .with_execution_providers([ort::ep::CUDA::default().with_device_id(0).build()])
-            .map_err(|error| anyhow!("cuda-unavailable: {error}"))?;
-        let mut builder = builder
-            .with_disable_cpu_fallback()
-            .map_err(|error| anyhow!("cannot disable CPU fallback: {error}"))?;
-        let session = builder
-            .commit_from_file(model)
-            .map_err(|error| anyhow!("GPU-only fp16 session failed: {error}"))?;
-        let mut upscaler = Self { session };
+        let wanted = provider.unwrap_or("auto");
+        let attempts: Vec<&str> = match wanted {
+            "tensorrt" => vec!["tensorrt"],
+            "cuda" => vec!["cuda"],
+            _ => vec!["tensorrt", "cuda"],
+        };
+        let mut last_error: Option<String> = None;
+        let mut built: Option<(Session, String)> = None;
+        for provider in attempts {
+            let result: Result<(Session, String)> = (|| {
+                let raw = match provider {
+                    "tensorrt" => {
+                        let cache = engine_cache
+                            .clone()
+                            .or_else(|| std::env::var("GPUTOOL_TRT_CACHE").ok())
+                            .unwrap_or_else(|| {
+                                Path::new(model)
+                                    .parent()
+                                    .unwrap_or_else(|| Path::new("."))
+                                    .join("trt-cache")
+                                    .to_string_lossy()
+                                    .into_owned()
+                            });
+                        let _ = fs::create_dir_all(&cache);
+                        let builder = Session::builder(&env)?;
+                        let builder = builder
+                            .with_execution_providers([ort::ep::TensorRT::default()
+                                .with_device_id(0)
+                                .with_fp16(true)
+                                .with_max_workspace_size(2 << 30)
+                                .with_engine_cache(true)
+                                .with_engine_cache_path(cache)
+                                .with_timing_cache(true)
+                                .build()])
+                            .map_err(|error| anyhow!("tensorrt-unavailable: {error}"))?;
+                        let mut builder = builder
+                            .with_disable_cpu_fallback()
+                            .map_err(|error| anyhow!("tensorrt-unavailable: {error}"))?;
+                        let session = builder
+                            .commit_from_file(model)
+                            .map_err(|error| anyhow!("tensorrt-unavailable: {error}"))?;
+                        (session, "TensorrtExecutionProvider".to_string())
+                    }
+                    _ => {
+                        let builder = Session::builder(&env)?;
+                        let builder = builder
+                            .with_execution_providers([ort::ep::CUDA::default().with_device_id(0).build()])
+                            .map_err(|error| anyhow!("cuda-unavailable: {error}"))?;
+                        let mut builder = builder
+                            .with_disable_cpu_fallback()
+                            .map_err(|error| anyhow!("cuda-unavailable: {error}"))?;
+                        let session = builder
+                            .commit_from_file(model)
+                            .map_err(|error| anyhow!("cuda-unavailable: {error}"))?;
+                        (session, "CUDAExecutionProvider".to_string())
+                    }
+                };
+                Ok(raw)
+            })();
+            match result {
+                Ok(value) => {
+                    built = Some(value);
+                    break;
+                }
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                    if wanted == "tensorrt" {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        let (session, provider) = built.ok_or_else(|| anyhow!("{}", last_error.unwrap_or_else(|| "no execution provider".to_string())))?;
+        let mut upscaler = Self { session, provider };
         let probe = vec![f16::ZERO; 3 * 64 * 64];
         let output = upscaler.infer_raw(1, 64, 64, probe.as_slice()).map_err(|error| {
             anyhow!("model-fp16-required: не удалось выполнить fp16-инференс ({error}); нужна ONNX-модель с float16 I/O")
@@ -344,7 +415,7 @@ fn run_frames(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Val
     Ok(json!({
         "engine": "rust",
         "device": "cuda:0",
-        "providers": ["CUDAExecutionProvider"],
+        "providers": [upscaler.provider.clone()],
         "scale": 2,
         "batch": batch_size,
         "frames": done,
@@ -588,7 +659,7 @@ fn run_video(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Valu
     Ok(json!({
         "engine": "rust",
         "device": "cuda:0",
-        "providers": ["CUDAExecutionProvider"],
+        "providers": [upscaler.provider.clone()],
         "scale": 2,
         "batch": batch_size,
         "frames": processed,
@@ -626,8 +697,8 @@ fn run_job(job: &str, config: &Config, upscaler: &mut Option<Upscaler>) -> Resul
     config.target_half()?;
     if upscaler.is_none() {
         let started = Instant::now();
-        let loaded = Upscaler::load(Path::new(&config.model))?;
-        emit_log(job, format!("CUDA fp16 session ready in {} ms (x2)", started.elapsed().as_millis()));
+        let loaded = Upscaler::load(Path::new(&config.model), config.provider.as_deref(), config.engine_cache.clone())?;
+        emit_log(job, format!("{} fp16 session ready in {} ms (x2)", loaded.provider, started.elapsed().as_millis()));
         *upscaler = Some(loaded);
     }
     let engine = upscaler.as_mut().expect("upscaler");
@@ -644,7 +715,7 @@ fn run_job(job: &str, config: &Config, upscaler: &mut Option<Upscaler>) -> Resul
 
 fn probe(model: &Path) -> Result<()> {
     let started = Instant::now();
-    let mut upscaler = Upscaler::load(model)?;
+    let mut upscaler = Upscaler::load(model, None, None)?;
     let load_ms = started.elapsed().as_millis();
     let input = vec![f16::ZERO; 3 * 64 * 64];
     upscaler.infer_raw(1, 64, 64, input.as_slice())?;
@@ -657,7 +728,7 @@ fn probe(model: &Path) -> Result<()> {
         "type": "probe",
         "engine": "rust",
         "device": "cuda:0",
-        "providers": ["CUDAExecutionProvider"],
+        "providers": [upscaler.provider.clone()],
         "scale": 2,
         "precision": "fp16",
         "loadMs": load_ms,
@@ -765,6 +836,8 @@ mod tests {
 
     fn config(source: &str) -> Config {
         Config {
+            provider: None,
+            engine_cache: None,
             source: source.into(),
             output: None,
             model: "/tmp/m.onnx".into(),

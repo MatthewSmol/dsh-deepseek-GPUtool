@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import readline from 'node:readline'
 import { VERSION } from '../engine/engine.js'
 
-const TOOLS = ['status', 'probe', 'ffmpeg', 'yolo', 'onnx', 'face', 'upscale', 'ball', 'ocr', 'python', 'jobs', 'job', 'cancel', 'history', 'gpu', 'setup', 'settings']
+const TOOLS = ['status', 'probe', 'ffmpeg', 'yolo', 'onnx', 'face', 'upscale', 'ball', 'ball_image', 'ocr', 'python', 'jobs', 'job', 'cancel', 'history', 'gpu', 'setup', 'settings']
 
 test('MCP server negotiates, lists tools/resources and answers status', async () => {
   const home = mkdtempSync(join(tmpdir(), 'gputool-mcp-'))

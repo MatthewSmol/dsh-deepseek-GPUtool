@@ -8,7 +8,7 @@ YOLO11, трекинг мяча и GPU-скрипты. У каждой зада�
 (процент, ETA, fps), а история вызовов хранит, какая сессия её запустила и
 сколько времени это заняло.
 
-- MCP-инструменты: `mcp__gputool__{status,probe,ffmpeg,yolo,onnx,face,ocr,ball,upscale,python,jobs,job,cancel,history,gpu,setup,settings}`
+- MCP-инструменты: `mcp__gputool__{status,probe,ffmpeg,yolo,onnx,face,ocr,ball,ball_image,upscale,python,jobs,job,cancel,history,gpu,setup,settings}`
 - Панель: левый сайдбар → GPU tool (Обзор / Задачи / История / Аренда / Настройки)
 - Язык интерфейса: **русский по умолчанию**, английский — переключателем RU / EN в шапке панели
 - HTTP API: `/gputool/api/*` (loopback, защищён токеном)
@@ -144,6 +144,23 @@ npm run test:rust    # Rust-тесты воркеров
   `deepseekTimeoutMs` (170 с — лимит API 180 с).
 - Тесты: +5 (разбор ответа, multipart на локальный сервер, отсутствие ключа в
   тексте ошибки, лимиты файла) — всего 17.
+
+### 1.7.0 — 2026-11-25
+
+- **`ball_image`**: захват мяча на одной картинке (или 1–8 изображениях) в Rust:
+  heatmap → субпиксельные координаты, `ball_image.json` и PNG с красной меткой.
+  Поддержка `bgMode=concat` для официальных TrackNetV3-чекпойнтов.
+- **Веса TrackNetV3**: скачаны официальные `TrackNet_best.pt`/`InpaintNet_best.pt`
+  (Google Drive `TrackNetV3_ckpts.zip`), экспортированы в
+  `tracknetv3_badminton.onnx` (27×288×512 → 8 heatmap). На кадре настольного
+  тенниса официальные (бадминтонные) веса дали conf 0.027 — мяч не найден;
+  BlurBall на том же кадре дал 0.255. Нужны TT-веса из OneDrive (закрыт).
+- **SPAN + TensorRT**: TensorRT 10.16.1 (cu13) установлен в GPU-venv; воркер
+  получил `provider=auto|cuda|tensorrt`, fp16, кэш engine. Замер на 16 кадрах:
+  CUDA 25,8 fps (32,6 мс/кадр), TensorRT с тёплым кэшем 43,9 fps (16,4 мс/кадр);
+  первая сборка engine ≈54 с, кэш лежит в `models/upscale/trt-cache`.
+- `manifest.json` со всеми весами (12 файлов, sha256).
+- Тесты: 60 Node (+1), Rust ball/upscale.
 
 ### 1.6.3 — 2026-11-24
 

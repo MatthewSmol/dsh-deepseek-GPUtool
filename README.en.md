@@ -8,7 +8,7 @@ YOLO11, ball tracking and GPU scripts. Every job has live progress (percent,
 ETA, fps), and the call history records which session started it and how long
 it took.
 
-- MCP tools: `mcp__gputool__{status,probe,ffmpeg,yolo,onnx,face,ocr,ball,upscale,python,jobs,job,cancel,history,gpu,setup,settings}`
+- MCP tools: `mcp__gputool__{status,probe,ffmpeg,yolo,onnx,face,ocr,ball,ball_image,upscale,python,jobs,job,cancel,history,gpu,setup,settings}`
 - Panel: left sidebar → GPU tool (Overview / Jobs / History / Leases / Settings)
 - Interface language: **Russian by default**, English via the RU / EN switch in the panel header
 - HTTP API: `/gputool/api/*` (loopback, token protected)
@@ -140,6 +140,25 @@ call history.
   `deepseekTimeoutMs` (170 s, under the API's 180 s limit).
 - Tests: +5 (response parsing, multipart against a local server, the key never
   echoed, file limits) for 17 total.
+
+### 1.7.0 — 2026-11-25
+
+- **`ball_image`**: still-image ball capture (or 1–8 images) in Rust: heatmap →
+  subpixel coordinates, `ball_image.json` and a PNG with a red marker. Supports
+  `bgMode=concat` for official TrackNetV3 checkpoints.
+- **TrackNetV3 weights**: official `TrackNet_best.pt`/`InpaintNet_best.pt`
+  downloaded (Google Drive `TrackNetV3_ckpts.zip`) and exported to
+  `tracknetv3_badminton.onnx` (27×288×512 → 8 heatmaps). On a table-tennis
+  frame the official (badminton) weights scored conf 0.027 — no ball; BlurBall
+  scored 0.255 on the same frame. Proper TT weights are still missing (OneDrive
+  access denied).
+- **SPAN + TensorRT**: TensorRT 10.16.1 (cu13) installed in the GPU venv; the
+  worker now accepts `provider=auto|cuda|tensorrt` with fp16 and an engine cache.
+  16-frame benchmark: CUDA 25.8 fps (32.6 ms/frame), TensorRT with a warm cache
+  43.9 fps (16.4 ms/frame); first engine build ≈54 s, cache in
+  `models/upscale/trt-cache`.
+- `manifest.json` with all weights (12 files, sha256).
+- Tests: 60 Node (+1), Rust ball/upscale.
 
 ### 1.6.3 — 2026-11-24
 

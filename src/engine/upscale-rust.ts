@@ -6,7 +6,7 @@
  * Кадры идут батчами, без тайлинга; видео — NVDEC → CUDA → NVENC.
  */
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import type { JobContext, Settings } from './types.js'
@@ -50,6 +50,7 @@ export interface UpscaleParams {
   output?: string
   model?: string
   batch?: number
+  provider?: 'auto' | 'cuda' | 'tensorrt'
   width?: number
   height?: number
   codec?: 'hevc' | 'h264'
@@ -66,6 +67,8 @@ export interface UpscaleConfig {
   output: string
   model: string
   batch: number
+  provider: 'auto' | 'cuda' | 'tensorrt'
+  engineCache?: string
   width?: number
   height?: number
   overlay?: never
@@ -124,6 +127,8 @@ export function buildUpscaleConfig(
     output,
     model,
     batch,
+    provider: params.provider ?? settings.upscaleProvider ?? 'auto',
+    engineCache: join(settings.modelsDir, 'upscale', 'trt-cache'),
     width: params.width,
     height: params.height,
     codec: params.codec ?? (settings.upscaleCodec as 'hevc' | 'h264') ?? 'hevc',

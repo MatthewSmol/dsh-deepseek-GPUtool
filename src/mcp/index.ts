@@ -375,6 +375,7 @@ mcp.registerTool(
       output: z.string().optional(),
       model: z.string().optional(),
       batch: z.number().optional(),
+      provider: z.enum(['auto', 'cuda', 'tensorrt']).optional().describe('Inference provider: TensorRT when available, else CUDA'),
       width: z.number().optional().describe('Target width (even, output is exactly this size)'),
       height: z.number().optional().describe('Target height (even)'),
       codec: z.enum(['hevc', 'h264']).optional(),
@@ -423,6 +424,39 @@ mcp.registerTool(
     }),
   },
   async (args) => await call('ball', args as Record<string, unknown>, async () => engine.submitBall(args as never, meta('ball', args as Record<string, unknown>))),
+)
+
+mcp.registerTool(
+  'ball_image',
+  {
+    title: 'Table tennis ball on a still image',
+    description:
+      'Detect a table tennis ball on one image (or 1-8 images for temporal context) with an ONNX ' +
+      'TrackNet/WASB model. A single image is duplicated across the model frame window; the heatmap gives ' +
+      'subpixel coordinates and, with annotate=true, a PNG with a red marker. Supports bgMode "concat" ' +
+      '(TrackNetV3 official checkpoints, frames+1)*3 channels.',
+    inputSchema: z.object({
+      image: z.string().optional(),
+      images: z.array(z.string()).optional(),
+      model: z.string().optional(),
+      outputDir: z.string().optional(),
+      threshold: z.number().optional(),
+      annotate: z.boolean().optional(),
+      frames: z.number().optional(),
+      bgMode: z.enum(['', 'concat', 'subtract', 'subtract_concat']).optional(),
+      outputIndex: z.number().optional(),
+      inputWidth: z.number().optional(),
+      inputHeight: z.number().optional(),
+      sigmoid: z.boolean().optional(),
+      overwrite: z.boolean().optional(),
+      device: deviceSchema.optional(),
+      label: z.string().optional(),
+    }),
+  },
+  async (args) =>
+    await call('ball_image', args as Record<string, unknown>, async () =>
+      engine.submitBall(args as never, meta('ball_image', args as Record<string, unknown>)),
+    ),
 )
 
 mcp.registerTool(

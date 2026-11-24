@@ -37,6 +37,7 @@ export interface Settings {
   upscaleModelPath: string
   /** Размер тайла и перекрытие для апскейла (CUDA). */
   upscaleBatch: number
+  upscaleProvider: 'auto' | 'cuda' | 'tensorrt'
   /** Кодек/качество видео-апскейла (NVENC). */
   upscaleCodec: 'hevc' | 'h264'
   upscaleQuality: 'fast' | 'balanced' | 'quality'

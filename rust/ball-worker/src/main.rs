@@ -69,6 +69,12 @@ struct Config {
     ffprobe_path: Option<String>,
     #[serde(default)]
     overwrite: Option<bool>,
+    /// Одно или несколько изображений вместо видео (1–8 кадров).
+    #[serde(default)]
+    images: Option<Vec<String>>,
+    /// Раскладка входа: "" (кадры), concat (кадры+фон), subtract, subtract_concat.
+    #[serde(default)]
+    bg_mode: Option<String>,
 }
 
 impl Config {
@@ -120,6 +126,26 @@ impl Config {
     fn annotate(&self) -> bool {
         self.annotate.unwrap_or(true)
     }
+    fn bg_mode(&self) -> &str {
+        self.bg_mode.as_deref().unwrap_or("")
+    }
+    /// Число входных каналов под выбранную раскладку и число кадров.
+    fn channels(&self, frames: usize) -> usize {
+        match self.bg_mode() {
+            "concat" => (frames + 1) * 3,
+            "subtract" => frames,
+            "subtract_concat" => frames * 4,
+            _ => frames * 3,
+        }
+    }
+    fn image_paths(&self) -> Vec<String> {
+        if let Some(images) = &self.images {
+            if !images.is_empty() {
+                return images.clone();
+            }
+        }
+        vec![self.source.clone()]
+    }
     fn ffmpeg(&self) -> String {
         self.ffmpeg_path.clone().unwrap_or_else(|| "ffmpeg".to_string())
     }
@@ -167,6 +193,8 @@ fn emit_progress(job: &str, frame: usize, total: usize, started: Instant, phase:
 struct Model {
     session: Session,
     frames: usize,
+    channels: usize,
+    bg_mode: String,
     width: u32,
     height: u32,
     device: String,
@@ -187,7 +215,7 @@ impl Model {
         let wanted = config.device.as_deref().unwrap_or("auto");
         let mut frames = config.frames();
         let mut last_error: Option<String> = None;
-        let mut model: Option<(Session, String, Vec<String>)> = None;
+        let mut model: Option<(Session, String, Vec<String>, usize, String)> = None;
 
         let attempts: Vec<bool> = match wanted {
             "cpu" => vec![false],
@@ -217,19 +245,27 @@ impl Model {
                     }
                 }
             };
-            // Подбираем число кадров: модель ждёт frames*3 каналов.
+            // Подбираем раскладку: concat/subtract или простые frames*3.
             let mut session = session;
-            let mut chosen = None;
-            for candidate in [frames, 1usize, 3] {
-                let channels = candidate * 3;
+            let mut chosen: Option<(usize, usize, String)> = None;
+            let config_channels = config.channels(frames);
+            let mut candidates: Vec<(usize, usize, String)> = vec![
+                (frames, config_channels, config.bg_mode().to_string()),
+                (frames, frames * 3, String::new()),
+            ];
+            for candidate_frames in [1usize, 3, frames] {
+                candidates.push((candidate_frames, candidate_frames * 3, String::new()));
+                candidates.push((candidate_frames, (candidate_frames + 1) * 3, "concat".to_string()));
+            }
+            for (candidate, channels, mode) in candidates {
                 let probe = vec![0f32; channels * height as usize * width as usize];
                 if infer_session(&mut session, channels, width, height, &probe).is_ok() {
-                    chosen = Some(candidate);
+                    chosen = Some((candidate, channels, mode));
                     break;
                 }
             }
             match chosen {
-                Some(candidate) => {
+                Some((candidate, channels, mode)) => {
                     frames = candidate;
                     let device = if use_cuda { "cuda:0".to_string() } else { "cpu".to_string() };
                     let providers = if use_cuda {
@@ -237,7 +273,7 @@ impl Model {
                     } else {
                         vec!["CPUExecutionProvider".to_string()]
                     };
-                    model = Some((session, device, providers));
+                    model = Some((session, device, providers, channels, mode));
                     break;
                 }
                 None => {
@@ -246,7 +282,7 @@ impl Model {
             }
         }
 
-        let (session, device, providers) =
+        let (session, device, providers, channels, bg_mode) =
             model.ok_or_else(|| anyhow!("model-layout-unsupported: {}", last_error.unwrap_or_default()))?;
         if device == "cpu" && wanted != "cpu" {
             emit_log("once", "CUDA is unavailable; ball inference runs on CPU");
@@ -258,6 +294,8 @@ impl Model {
         Ok(Self {
             session,
             frames,
+            channels,
+            bg_mode,
             width,
             height,
             device,
@@ -268,7 +306,7 @@ impl Model {
     }
 
     fn infer(&mut self, input: &[f32]) -> Result<Vec<f32>> {
-        infer_session(&mut self.session, self.frames * 3, self.width, self.height, input)
+        infer_session(&mut self.session, self.channels, self.width, self.height, input)
     }
 }
 
@@ -714,6 +752,12 @@ fn run_job(job: &str, config: &Config, model: &mut Option<Model>) -> Result<Valu
         *model = Some(loaded);
     }
     let engine = model.as_mut().expect("model");
+    if config.images.is_some() || is_image_path(source) {
+        return run_image(job, config, engine, &started);
+    }
+    if engine.channels != engine.frames * 3 {
+        bail!("model-layout-unsupported: bg_mode={} is supported for images only", engine.bg_mode);
+    }
     let (width, height, source_fps, source_duration, has_audio) = probe_video(config, source)?;
     let fps = config.fps.unwrap_or(source_fps).clamp(1.0, 60.0);
     let start = config.start_sec.unwrap_or(0.0).max(0.0);
@@ -900,6 +944,151 @@ fn run_job(job: &str, config: &Config, model: &mut Option<Model>) -> Result<Valu
             "width": engine.width,
             "height": engine.height,
             "offset": config.offset(),
+        },
+        "elapsedMs": started.elapsed().as_millis(),
+    }))
+}
+
+fn is_image_path(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|value| value.to_str()).map(|value| value.to_ascii_lowercase()).as_deref(),
+        Some("png" | "jpg" | "jpeg" | "webp" | "bmp")
+    )
+}
+
+fn load_image(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
+    let image = image::open(path).with_context(|| format!("image-decode-failed: {}", path.display()))?;
+    let image = image.to_rgb8();
+    let (width, height) = image.dimensions();
+    Ok((width, height, image.into_raw()))
+}
+
+fn draw_marker(path: &Path, x: f32, y: f32, output: &Path) -> Result<()> {
+    let mut image = image::open(path).with_context(|| format!("image-decode-failed: {}", path.display()))?.to_rgb8();
+    let (width, height) = image.dimensions();
+    let radius = 14i32.max((width.min(height) as i32) / 80);
+    let cx = x.round() as i32;
+    let cy = y.round() as i32;
+    for angle in 0..720 {
+        let theta = angle as f32 * std::f32::consts::PI / 360.0;
+        for thickness in 0..2 {
+            let px = cx + ((radius - thickness) as f32 * theta.cos()).round() as i32;
+            let py = cy + ((radius - thickness) as f32 * theta.sin()).round() as i32;
+            if px >= 0 && py >= 0 && px < width as i32 && py < height as i32 {
+                image.put_pixel(px as u32, py as u32, image::Rgb([255, 32, 32]));
+            }
+        }
+    }
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    image.save(output).with_context(|| format!("encode-failed: {}", output.display()))?;
+    Ok(())
+}
+
+/// Захват мяча на одном изображении (или 1–8 кадрах): без ffmpeg.
+fn run_image(job: &str, config: &Config, engine: &mut Model, started: &Instant) -> Result<Value> {
+    let paths: Vec<PathBuf> = config.image_paths().into_iter().map(PathBuf::from).collect();
+    if paths.is_empty() {
+        bail!("input-missing: images are empty");
+    }
+    let mut frames_rgb: Vec<(u32, u32, Vec<u8>)> = Vec::with_capacity(paths.len());
+    for path in &paths {
+        if !path.is_file() {
+            bail!("input-missing: {}", path.display());
+        }
+        frames_rgb.push(load_image(path)?);
+    }
+    let (src_w, src_h) = (frames_rgb[0].0, frames_rgb[0].1);
+    let mut resized: Vec<Vec<f32>> = Vec::with_capacity(frames_rgb.len());
+    for (width, height, rgb) in &frames_rgb {
+        if *width != src_w || *height != src_h {
+            bail!("image-size-mismatch: all images must have the same size");
+        }
+        resized.push(Resizer::new(*width as usize, *height as usize, engine.width, engine.height).resize(rgb));
+    }
+    let plane = engine.width as usize * engine.height as usize;
+    let frames = engine.frames;
+    let mut tensor = vec![0f32; engine.channels * plane];
+    for slot in 0..frames {
+        let frame = &resized[slot.min(resized.len() - 1)];
+        if engine.channels == frames * 3 || engine.channels == (frames + 1) * 3 {
+            for channel in 0..3 {
+                let from = channel * plane;
+                let to = (slot * 3 + channel) * plane;
+                match (engine.mean, engine.std) {
+                    (Some(mean), Some(std)) => {
+                        for index in 0..plane {
+                            tensor[to + index] = (frame[from + index] - mean[channel]) / std[channel];
+                        }
+                    }
+                    _ => tensor[to..to + plane].copy_from_slice(&frame[from..from + plane]),
+                }
+            }
+        } else if engine.channels == frames {
+            // subtract: разница с первым кадром как фоном.
+            for index in 0..plane {
+                tensor[slot * plane + index] = frame[index] - resized[0][index];
+            }
+        } else {
+            bail!("model-layout-unsupported: bg_mode={} channels={}", engine.bg_mode, engine.channels);
+        }
+    }
+    if engine.channels == (frames + 1) * 3 {
+        let background = &resized[0];
+        for channel in 0..3 {
+            let from = channel * plane;
+            let to = (frames * 3 + channel) * plane;
+            tensor[to..to + plane].copy_from_slice(&background[from..from + plane]);
+        }
+    }
+    emit_progress(job, 1, 1, *started, "infer");
+    let output = engine.infer(&tensor)?;
+    if output.len() % plane != 0 {
+        bail!("model-layout-unsupported: {} values is not a multiple of {plane}", output.len());
+    }
+    let heatmaps = output.len() / plane;
+    let channel = match config.output_index() {
+        Some(index) if index < heatmaps => index,
+        Some(index) => bail!("model-layout-unsupported: outputIndex={index}, but the model returns {heatmaps} heatmaps"),
+        None => heatmaps.saturating_sub(1),
+    };
+    let raw_heatmap = &output[channel * plane..(channel + 1) * plane];
+    let use_sigmoid = config.needs_sigmoid(raw_heatmap);
+    let heatmap: Vec<f32> = if use_sigmoid {
+        raw_heatmap.iter().map(|value| 1.0 / (1.0 + (-value).exp())).collect()
+    } else {
+        raw_heatmap.to_vec()
+    };
+    let (visible, hx, hy, conf) = heatmap_point(&heatmap, engine.width as usize, engine.height as usize, config.threshold());
+    let x = hx * src_w as f32 / engine.width as f32;
+    let y = hy * src_h as f32 / engine.height as f32;
+    let dir = PathBuf::from(&config.output_dir);
+    fs::create_dir_all(&dir)?;
+    let stem = paths[0].file_stem().and_then(|value| value.to_str()).unwrap_or("image");
+    let annotated = dir.join(format!("{stem}_ball.png"));
+    if config.annotate() && visible {
+        draw_marker(&paths[0], x, y, &annotated)?;
+    }
+    emit_progress(job, 1, 1, *started, "done");
+    Ok(json!({
+        "engine": "rust",
+        "device": engine.device,
+        "providers": engine.providers,
+        "images": paths.len(),
+        "width": src_w,
+        "height": src_h,
+        "x": x,
+        "y": y,
+        "confidence": conf,
+        "visible": visible,
+        "annotated": if config.annotate() && visible { Some(annotated.to_string_lossy().to_string()) } else { None },
+        "model": {
+            "frames": engine.frames,
+            "channels": engine.channels,
+            "bgMode": engine.bg_mode,
+            "width": engine.width,
+            "height": engine.height,
         },
         "elapsedMs": started.elapsed().as_millis(),
     }))
@@ -1094,6 +1283,8 @@ mod tests {
         assert_eq!(ass_time(1234), "0:00:12.34");
         let points = vec![Point { frame: 0, time: 0.0, visible: true, x: 10.0, y: 20.0, conf: 1.0 }];
         let config = Config {
+            images: None,
+            bg_mode: None,
             source: "/tmp/x.mp4".into(), model: "/tmp/x.onnx".into(), output_dir: std::env::temp_dir().join("ball-test").to_string_lossy().into(),
             fps: None, start_sec: None, duration_sec: None, threshold: None, annotate: None, max_gap_frames: None,
             smooth: None, max_jump_px: None, predict_offset: None, output_index: None, sigmoid: None, normalize: None, mean: None, std: None, frames: None, input_width: None, input_height: None, device: None,
