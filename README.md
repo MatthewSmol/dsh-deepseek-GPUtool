@@ -128,6 +128,23 @@ npm test
 - Тесты: +5 (разбор ответа, multipart на локальный сервер, отсутствие ключа в
   тексте ошибки, лимиты файла) — всего 17.
 
+### 1.5.1 — 2026-11-24
+
+- **Скачаны реальные веса WASB-SBDT** (`wasb_tennis_best.pth.tar`, 6,1 МБ, MIT)
+  и экспортированы в ONNX скриптом `scripts/export_wasb_onnx.py`
+  (HRNet, вход `[1,9,288,512]`, выход `[1,3,288,512]`, opset 18).
+- Воркер `ball` научился: выбирать канал из нескольких heatmap (`outputIndex`,
+  по умолчанию последний), автоматически применять **sigmoid** к логитам и
+  **ImageNet-нормализацию** для моделей WASB (`normalize: auto|imagenet|none`),
+  отбрасывать телепорты (`maxJumpPx`, по умолчанию 30 % ширины).
+- Проверено на реальном клипе 1280×720@25 (20 с, WASB): **456/502 кадров**
+  с мячом (274 реальные детекции, средняя уверенность 0.78), медианный шаг
+  9,4 px, время обработки ~13,7 с (включая разметку), `ball.mp4` HEVC.
+- Точка на видео проверена пиксельно: в кадре реальной детекции (conf 0.94)
+  29 жёлтых пикселей ровно в координатах модели, в оригинале — 0.
+- README: команды скачивания и экспорта, sha256, нормализация и новые параметры;
+  DETAIL обновлён.
+
 ### 1.5.0 — 2026-11-24
 
 - **Трекинг мяча настольного тенниса** (`mcp__gputool__ball`): ONNX-модели
@@ -255,6 +272,29 @@ torch.onnx.export(model, torch.zeros(1, 9, 288, 512), "tracknetv2.onnx",
 [TrackNetV3](https://github.com/qaz812345/TrackNetV3) (нужна ветка TrackNet),
 [WASB-SBDT](https://github.com/nttcom/WASB-SBDT) (теннисные веса MIT). Модель
 подключается путём `ballModelPath` или `GPUTOOL_BALL_MODEL`, в git не входит.
+
+### Готовые веса WASB (теннис) и экспорт в ONNX
+
+Проверенный путь для настольного тенниса — WASB-SBDT (HRNet), веса MIT:
+
+```bash
+curl -L -o ~/.dsh/gputool/models/ball/wasb_tennis_best.pth.tar \
+  https://raw.githubusercontent.com/ZSHYC/WASB-SBDT-FPFilter/main/pretrained_weights/wasb_tennis_best.pth.tar
+# sha256: 9d391239ab10c733f8e5bfadf16ab72838e7a8ebc88e8ae2038501c03d42b4bb
+
+git clone --depth 1 https://github.com/nttcom/WASB-SBDT ~/.cache/gputool/wasb-sbdt
+
+/home/main/test/.venv/cv312/bin/python scripts/export_wasb_onnx.py \
+  --repo ~/.cache/gputool/wasb-sbdt \
+  --weights ~/.dsh/gputool/models/ball/wasb_tennis_best.pth.tar \
+  --output ~/.dsh/gputool/models/ball/wasb_tennis.onnx
+# вход [1,9,288,512], выход [1,3,288,512], sha256 8d7220ea…
+```
+
+WASB отдаёт **логиты** и обучен на ImageNet mean/std: воркер сам включает
+sigmoid и нормализацию (`normalize: auto`, срабатывает по имени `wasb`), канал
+берётся последний (`outputIndex`, по умолчанию `C-1`). Для других моделей
+можно указать `normalize: none` и `sigmoid: false`.
 
 Выход: `ball.jsonl` + `ball.csv` (frame/time/visible/x/y/conf), `ball.ass` и
 `ball.mp4` с точкой; `annotate:false` — только координаты.

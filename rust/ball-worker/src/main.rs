@@ -40,7 +40,19 @@ struct Config {
     #[serde(default)]
     smooth: Option<bool>,
     #[serde(default)]
+    max_jump_px: Option<f32>,
+    #[serde(default)]
     predict_offset: Option<usize>,
+    #[serde(default)]
+    output_index: Option<usize>,
+    #[serde(default)]
+    sigmoid: Option<bool>,
+    #[serde(default)]
+    normalize: Option<String>,
+    #[serde(default)]
+    mean: Option<Vec<f32>>,
+    #[serde(default)]
+    std: Option<Vec<f32>>,
     #[serde(default)]
     frames: Option<usize>,
     #[serde(default)]
@@ -66,11 +78,35 @@ impl Config {
     fn max_gap(&self) -> usize {
         self.max_gap_frames.unwrap_or(12)
     }
+    /// Порог телепорта: по умолчанию 30% ширины кадра за кадр.
+    fn max_jump(&self, width: f32) -> f32 {
+        self.max_jump_px.unwrap_or(width * 0.3).max(0.0)
+    }
     fn smooth(&self) -> bool {
         self.smooth.unwrap_or(true)
     }
     fn offset(&self) -> usize {
         self.predict_offset.unwrap_or(0)
+    }
+    fn output_index(&self) -> Option<usize> {
+        self.output_index
+    }
+    /// Нормализация входа: WASB обучен на ImageNet mean/std, TrackNet — на 0..1.
+    fn normalization(&self) -> Option<([f32; 3], [f32; 3])> {
+        if let (Some(mean), Some(std)) = (&self.mean, &self.std) {
+            if mean.len() == 3 && std.len() == 3 {
+                return Some(([mean[0], mean[1], mean[2]], [std[0], std[1], std[2]]));
+            }
+        }
+        normalize_preset(self.normalize.as_deref(), &self.model)
+    }
+
+    /// Модели вроде WASB отдают логиты; auto включает sigmoid, если значения вне [0,1].
+    fn needs_sigmoid(&self, heatmap: &[f32]) -> bool {
+        match self.sigmoid {
+            Some(value) => value,
+            None => heatmap.iter().any(|value| *value < 0.0 || *value > 1.0),
+        }
     }
     fn frames(&self) -> usize {
         self.frames.unwrap_or(3).clamp(1, 8)
@@ -135,6 +171,8 @@ struct Model {
     height: u32,
     device: String,
     providers: Vec<String>,
+    mean: Option<[f32; 3]>,
+    std: Option<[f32; 3]>,
 }
 
 impl Model {
@@ -213,7 +251,20 @@ impl Model {
         if device == "cpu" && wanted != "cpu" {
             emit_log("once", "CUDA is unavailable; ball inference runs on CPU");
         }
-        Ok(Self { session, frames, width, height, device, providers })
+        let normalization = config.normalization();
+        if normalization.is_some() {
+            emit_log("once", "ball: input normalization = ImageNet mean/std");
+        }
+        Ok(Self {
+            session,
+            frames,
+            width,
+            height,
+            device,
+            providers,
+            mean: normalization.map(|value| value.0),
+            std: normalization.map(|value| value.1),
+        })
     }
 
     fn infer(&mut self, input: &[f32]) -> Result<Vec<f32>> {
@@ -363,7 +414,26 @@ fn median(values: &[f32]) -> f32 {
 }
 
 /// Заполняет пропуски и сглаживает траекторию, не трогая короткие обрывы.
-fn postprocess(mut points: Vec<Point>, max_gap: usize, smooth: bool) -> Vec<Point> {
+fn postprocess(mut points: Vec<Point>, max_gap: usize, smooth: bool, max_jump: f32) -> Vec<Point> {
+    // Отбрасываем телепорты: мяч не может перелететь больше max_jump за кадр.
+    if max_jump > 0.0 {
+        let mut last: Option<(usize, f32, f32)> = None;
+        for index in 0..points.len() {
+            if !points[index].visible {
+                continue;
+            }
+            if let Some((last_index, last_x, last_y)) = last {
+                let distance = ((points[index].x - last_x).powi(2) + (points[index].y - last_y).powi(2)).sqrt();
+                let allowed = max_jump * (index - last_index).max(1) as f32;
+                if distance > allowed {
+                    points[index].visible = false;
+                    points[index].conf = 0.0;
+                    continue;
+                }
+            }
+            last = Some((index, points[index].x, points[index].y));
+        }
+    }
     if smooth {
         let visible: Vec<usize> = points.iter().enumerate().filter(|(_, point)| point.visible).map(|(index, _)| index).collect();
         let original = points.clone();
@@ -542,7 +612,7 @@ fn annotate(config: &Config, ass: &Path, source: &Path, output: &Path, fps: f64,
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().context("cannot start annotate encoder")?;
     if let Some(stdout) = child.stdout.take() {
-        let duration = config.duration_sec.unwrap_or(0.0).max(1.0);
+        let _duration = config.duration_sec.unwrap_or(0.0).max(1.0);
         for line in BufReader::new(stdout).lines().flatten() {
             if let Some(value) = line.strip_prefix("out_time_us=") {
                 if let Ok(micros) = value.trim().parse::<f64>() {
@@ -693,6 +763,7 @@ fn run_job(job: &str, config: &Config, model: &mut Option<Model>) -> Result<Valu
     let mut tensor = vec![0f32; channels * plane];
     let mut points: Vec<Point> = Vec::with_capacity(total_frames);
     let mut frame_index = 0usize;
+    let mut sigmoid_reported = false;
     let mut last_emit = Instant::now();
 
     loop {
@@ -713,13 +784,42 @@ fn run_job(job: &str, config: &Config, model: &mut Option<Model>) -> Result<Valu
                 for channel in 0..3 {
                     let from = channel * plane;
                     let to = (slot * 3 + channel) * plane;
-                    tensor[to..to + plane].copy_from_slice(&frame[from..from + plane]);
+                    match (engine.mean, engine.std) {
+                        (Some(mean), Some(std)) => {
+                            for index in 0..plane {
+                                tensor[to + index] = (frame[from + index] - mean[channel]) / std[channel];
+                            }
+                        }
+                        _ => tensor[to..to + plane].copy_from_slice(&frame[from..from + plane]),
+                    }
                 }
             }
-            let heatmap = engine.infer(&tensor)?;
-            if heatmap.len() != plane {
-                bail!("model-layout-unsupported: expected {plane} heatmap values, got {}", heatmap.len());
+            let output = engine.infer(&tensor)?;
+            if output.len() % plane != 0 {
+                bail!(
+                    "model-layout-unsupported: {} values is not a multiple of {plane} (H*W)",
+                    output.len()
+                );
             }
+            let heatmaps = output.len() / plane;
+            let channel = match config.output_index() {
+                Some(index) if index < heatmaps => index,
+                Some(index) => bail!(
+                    "model-layout-unsupported: outputIndex={index}, but the model returns {heatmaps} heatmaps"
+                ),
+                None => heatmaps.saturating_sub(1),
+            };
+            let raw_heatmap = &output[channel * plane..(channel + 1) * plane];
+            let use_sigmoid = config.needs_sigmoid(raw_heatmap);
+            if use_sigmoid && !sigmoid_reported {
+                emit_log(job, "ball: heatmap looks like logits, applying sigmoid");
+                sigmoid_reported = true;
+            }
+            let heatmap: Vec<f32> = if use_sigmoid {
+                raw_heatmap.iter().map(|value| 1.0 / (1.0 + (-value).exp())).collect()
+            } else {
+                raw_heatmap.to_vec()
+            };
             let (visible, x, y, conf) = heatmap_point(&heatmap, engine.width as usize, engine.height as usize, config.threshold());
             let predicted = frame_index.saturating_sub(config.offset());
             points.push(Point {
@@ -771,7 +871,7 @@ fn run_job(job: &str, config: &Config, model: &mut Option<Model>) -> Result<Valu
             conf: 0.0,
         }))
         .collect();
-    ordered = postprocess(ordered, config.max_gap(), config.smooth());
+    ordered = postprocess(ordered, config.max_gap(), config.smooth(), config.max_jump(width as f32));
     let detected = ordered.iter().filter(|point| point.visible).count();
     let (jsonl_path, csv_path) = write_outputs(config, &ordered)?;
     let ass_path = build_ass(config, &ordered, width, height, fps)?;
@@ -894,6 +994,22 @@ fn serve() -> Result<()> {
     Ok(())
 }
 
+/// Пресет нормализации по имени модели: WASB — ImageNet, остальные — 0..1.
+fn normalize_preset(override_name: Option<&str>, model: &str) -> Option<([f32; 3], [f32; 3])> {
+    let imagenet = ([0.485f32, 0.456, 0.406], [0.229f32, 0.224, 0.225]);
+    match override_name {
+        Some("none") => None,
+        Some("imagenet") => Some(imagenet),
+        _ => {
+            if model.to_ascii_lowercase().contains("wasb") {
+                Some(imagenet)
+            } else {
+                None
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -920,11 +1036,56 @@ mod tests {
             point(0, true), point(1, false), point(2, false), point(3, true),
             point(4, false), point(5, false), point(6, false),
         ];
-        let filled = postprocess(points, 2, false);
+        let filled = postprocess(points, 2, false, 0.0);
         // короткий разрыв между детекциями заполняется, длинный хвост — нет
         assert!(filled[1].visible && filled[2].visible);
         assert!((filled[1].x - 1.0).abs() < 0.001 && (filled[2].x - 2.0).abs() < 0.001);
         assert!(!filled[4].visible && !filled[5].visible && !filled[6].visible);
+    }
+
+    #[test]
+    fn multiple_heatmaps_pick_the_requested_channel() {
+        // Три heatmap: пики в разных местах; последний канал — самый правый.
+        let (w, h) = (8usize, 4usize);
+        let plane = w * h;
+        let mut output = vec![0f32; 3 * plane];
+        output[1 * w + 1] = 0.9; // канал 0 -> x=1
+        output[plane + 2 * w + 5] = 0.9; // канал 1 -> x=5
+        output[2 * plane + 3 * w + 7] = 0.9; // канал 2 -> x=7
+        let pick = |index: usize| {
+            let heatmap = &output[index * plane..(index + 1) * plane];
+            heatmap_point(heatmap, w, h, 0.5)
+        };
+        assert_eq!(pick(0).1 as usize, 1);
+        assert_eq!(pick(2).1 as usize, 7);
+        assert_eq!(3 * plane / plane, 3);
+    }
+
+    #[test]
+    fn normalization_preset_depends_on_the_model_family() {
+        assert!(normalize_preset(None, "/models/wasb_tennis.onnx").is_some());
+        assert!(normalize_preset(None, "/models/tracknetv2.onnx").is_none());
+        assert!(normalize_preset(Some("imagenet"), "/models/tracknetv2.onnx").is_some());
+        assert!(normalize_preset(Some("none"), "/models/wasb_tennis.onnx").is_none());
+    }
+
+    #[test]
+    fn logits_are_detected_and_sigmoid_maps_them_to_probabilities() {
+        let logits = vec![-10.0f32, 0.0, 2.0];
+        let needs = logits.iter().any(|value| *value < 0.0 || *value > 1.0);
+        assert!(needs);
+        let probabilities: Vec<f32> = logits.iter().map(|value| 1.0 / (1.0 + (-value).exp())).collect();
+        assert!((probabilities[1] - 0.5).abs() < 1e-6);
+        assert!(probabilities[2] > 0.85 && probabilities[0] < 0.001);
+    }
+
+    #[test]
+    fn jumps_above_the_limit_are_dropped_before_gap_filling() {
+        let point = |frame: usize, x: f32| Point { frame, time: frame as f64 / 25.0, visible: true, x, y: 0.0, conf: 1.0 };
+        let points = vec![point(0, 100.0), point(1, 110.0), point(2, 900.0), point(3, 130.0)];
+        let filtered = postprocess(points, 0, false, 100.0);
+        assert!(filtered[0].visible && filtered[1].visible && filtered[3].visible);
+        assert!(!filtered[2].visible);
     }
 
     #[test]
@@ -935,7 +1096,7 @@ mod tests {
         let config = Config {
             source: "/tmp/x.mp4".into(), model: "/tmp/x.onnx".into(), output_dir: std::env::temp_dir().join("ball-test").to_string_lossy().into(),
             fps: None, start_sec: None, duration_sec: None, threshold: None, annotate: None, max_gap_frames: None,
-            smooth: None, predict_offset: None, frames: None, input_width: None, input_height: None, device: None,
+            smooth: None, max_jump_px: None, predict_offset: None, output_index: None, sigmoid: None, normalize: None, mean: None, std: None, frames: None, input_width: None, input_height: None, device: None,
             gpu_index: None, ffmpeg_path: None, ffprobe_path: None, overwrite: None,
         };
         let _ = fs::create_dir_all(&config.output_dir);

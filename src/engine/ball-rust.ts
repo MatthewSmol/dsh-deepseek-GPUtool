@@ -53,7 +53,10 @@ export interface BallParams {
   annotate?: boolean
   maxGapFrames?: number
   smooth?: boolean
+  maxJumpPx?: number
   predictOffset?: number
+  outputIndex?: number
+  sigmoid?: boolean
   frames?: number
   inputWidth?: number
   inputHeight?: number
@@ -72,7 +75,10 @@ export interface BallConfig {
   annotate: boolean
   maxGapFrames: number
   smooth: boolean
+  maxJumpPx?: number
   predictOffset: number
+  outputIndex?: number
+  sigmoid?: boolean
   frames?: number
   inputWidth?: number
   inputHeight?: number
@@ -131,7 +137,10 @@ export function buildBallConfig(
     annotate: params.annotate ?? settings.ballAnnotate ?? true,
     maxGapFrames: params.maxGapFrames ?? settings.ballMaxGapFrames ?? 12,
     smooth: params.smooth ?? true,
+    maxJumpPx: params.maxJumpPx,
     predictOffset: params.predictOffset ?? 0,
+    outputIndex: params.outputIndex,
+    sigmoid: params.sigmoid,
     frames: params.frames,
     inputWidth: params.inputWidth,
     inputHeight: params.inputHeight,

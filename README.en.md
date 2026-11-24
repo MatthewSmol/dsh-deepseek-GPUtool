@@ -126,6 +126,22 @@ call history.
 - Tests: +5 (response parsing, multipart against a local server, the key never
   echoed, file limits) for 17 total.
 
+### 1.5.1 — 2026-11-24
+
+- **Real WASB-SBDT weights downloaded** (`wasb_tennis_best.pth.tar`, 6.1 MB, MIT)
+  and exported to ONNX by `scripts/export_wasb_onnx.py` (HRNet, input
+  `[1,9,288,512]`, output `[1,3,288,512]`, opset 18).
+- The `ball` worker now selects a channel from multiple heatmaps (`outputIndex`,
+  defaults to the last), applies **sigmoid** for logits and **ImageNet
+  normalization** for WASB models (`normalize: auto|imagenet|none`), and rejects
+  teleports (`maxJumpPx`, 30 % of frame width by default).
+- Verified on a real 1280×720@25 clip (20 s, WASB): **456/502 frames** with the
+  ball (274 real detections, mean confidence 0.78), median step 9.4 px, ~13.7 s
+  total including annotation, HEVC `ball.mp4`.
+- The dot was verified pixel-wise: at a real detection (conf 0.94) 29 yellow
+  pixels sit exactly at the model coordinates, while the original frame has 0.
+- README documents download/export, sha256, normalization and the new parameters.
+
 ### 1.5.0 — 2026-11-24
 
 - **Table tennis ball tracking** (`mcp__gputool__ball`): ONNX TrackNetV2/V3 and
@@ -243,6 +259,25 @@ call history.
   "outputDir": "/out/ball"
 }
 ```
+
+### Ready WASB (tennis) weights and ONNX export
+
+The verified table-tennis path is WASB-SBDT (HRNet), MIT weights:
+
+```bash
+curl -L -o ~/.dsh/gputool/models/ball/wasb_tennis_best.pth.tar \
+  https://raw.githubusercontent.com/ZSHYC/WASB-SBDT-FPFilter/main/pretrained_weights/wasb_tennis_best.pth.tar
+# sha256: 9d391239ab10c733f8e5bfadf16ab72838e7a8ebc88e8ae2038501c03d42b4bb
+git clone --depth 1 https://github.com/nttcom/WASB-SBDT ~/.cache/gputool/wasb-sbdt
+python scripts/export_wasb_onnx.py --repo ~/.cache/gputool/wasb-sbdt \
+  --weights ~/.dsh/gputool/models/ball/wasb_tennis_best.pth.tar \
+  --output ~/.dsh/gputool/models/ball/wasb_tennis.onnx
+```
+
+WASB emits **logits** and expects ImageNet normalization; the worker enables
+both automatically (`normalize: auto` matches the `wasb` filename) and takes the
+last output channel (`outputIndex`). Other models can use `normalize: none` and
+`sigmoid: false`.
 
 The tool targets ONNX models from the TrackNetV2/V3 and WASB-SBDT families:
 `[1, frames*3, H, W]` (usually 1×9×288×512) → heatmap `[1, 1, H, W]`. Export from PyTorch (opset 18; ORT 1.32 supports it) as shown above. Weights:
