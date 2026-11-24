@@ -215,6 +215,9 @@ export function createPanel(ui: Ui): (props: any) => any {
         { className: 'gputool-progress-meta' },
         h('span', null, progress.phase || ''),
         counts.length ? h('span', null, counts.join(' · ')) : null,
+        !determinate && progress.processedMs == null && props.job.status === 'running'
+          ? h('span', { className: 'gputool-muted' }, props.tr('progress.noData'))
+          : null,
         eta ? h('span', null, eta) : null,
       ),
     )
@@ -675,7 +678,12 @@ export function createPanel(ui: Ui): (props: any) => any {
           ),
           h('div', { className: 'gputool-kv' }, h('span', null, tr('jobs.who')), h('span', null, h(WhoCell, { who: job.who, tr }))),
           h('div', { className: 'gputool-kv' }, h('span', null, tr('jobs.device')), h('span', null, job.device.kind === 'gpu' ? `GPU ${job.device.index ?? 0}${job.device.name ? ` (${job.device.name})` : ''}` : tr('device.cpu'))),
-          h('div', { className: 'gputool-kv' }, h('span', null, tr('history.duration')), h('span', null, fmtDuration(job.durationMs))),
+          h(
+            'div',
+            { className: 'gputool-kv' },
+            h('span', null, tr('history.duration')),
+            h('span', null, fmtDuration(job.durationMs ?? (job.startedAt ? Date.now() - job.startedAt : null))),
+          ),
           h(Progress, { job, tr }),
           job.warnings?.length ? h('h4', null, tr('jobs.warnings')) : null,
           job.warnings?.length

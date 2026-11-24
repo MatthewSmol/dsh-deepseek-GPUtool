@@ -460,10 +460,11 @@ mcp.registerTool(
     title: 'Run a GPU python script',
     description:
       'Run a local python script with CUDA_VISIBLE_DEVICES and the GPU library path configured, e.g. for a tracker or RIFE stage. ' +
-      'Progress lines like "progress: 42%" are mirrored into the job progress.',
+      'Progress lines like "progress: 42%" and ffmpeg lines (out_time_us=, time=, frame=) are mirrored into the job progress.',
     inputSchema: z.object({
       script: z.string(),
-      args: z.array(z.string()).optional().describe('Raw ffmpeg argv; only for operation "raw" (use vf for filters)'),
+      args: z.array(z.string()).optional().describe('Arguments passed to the python script'),
+      durationSec: z.number().optional().describe('Expected duration in seconds; enables percent/ETA from ffmpeg out_time/time lines'),
       cwd: z.string().optional(),
       env: z.record(z.string(), z.string()).optional(),
       device: deviceSchema.optional(),

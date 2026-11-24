@@ -141,6 +141,19 @@ call history.
 - Tests: +5 (response parsing, multipart against a local server, the key never
   echoed, file limits) for 17 total.
 
+### 1.6.3 — 2026-11-24
+
+- **Python job progress**: besides `progress: NN%`, ffmpeg lines
+  `out_time_us=`/`out_time_ms=`/`time=`, `frame=`, `fps=`, `speed=` are parsed;
+  the `durationSec` parameter enables percent and ETA.
+- An empty percent no longer looks broken: the panel shows live elapsed time and
+  a “the script reports no progress” hint.
+- Why `final2.py` had no progress: the script runs ffmpeg with
+  `capture_output=True` and prints only `START`, so gputool never sees
+  `-progress`. Fix: run the encode via `ffmpeg raw` (it injects
+  `-progress pipe:1`) or forward ffmpeg lines from the script.
+- Tests: 59 Node (+5 for the progress parser).
+
 ### 1.6.2 — 2026-11-24
 
 - **`vf` is no longer dropped**: the `vf` parameter (full filter chain) works in
@@ -336,6 +349,22 @@ call history.
   difference is bilinear interpolation rounding, the same faces are found.
 - Tests: +2 Node (binary availability, `libonnxruntime.so` lookup) and 3 Rust
   (`nms`, `similarity`, `cosine`).
+
+## Python job progress
+
+A `python` job shows a percent only when the script reports progress:
+
+- own protocol: print `progress: 42%` (legacy);
+- ffmpeg lines: run ffmpeg with `-progress pipe:1 -nostats` and forward its
+  stdout/stderr — `out_time_us=`, `out_time_ms=`, `time=`, `frame=`, `fps=`,
+  `speed=` are parsed;
+- pass `durationSec` to `mcp__gputool__python` so `out_time` yields percent and
+  ETA.
+
+If the script runs ffmpeg with `capture_output=True` and prints only the final
+result, there is no progress: gputool never sees the inner output. For final
+encodes prefer `mcp__gputool__ffmpeg` (`encode`/`raw`) — it injects
+`-progress pipe:1` and provides percent, ETA and fps.
 
 ## Ball tracking (TrackNet / WASB, ONNX)
 

@@ -25,6 +25,7 @@ import { detectGpu } from './gpu.js'
 import { Doctor } from './doctor.js'
 import type { PythonProbe } from './doctor.js'
 import { JobManager, describeDevice } from './jobs.js'
+import { parseProgressLine } from './progress.js'
 import {
   applyProgressLine,
   buildFfmpegPlan,
@@ -59,7 +60,7 @@ import {
 } from './upscale-rust.js'
 import { run, stream } from './proc.js'
 
-export const VERSION = '1.6.2'
+export const VERSION = '1.6.3'
 
 /** Диагностика ffmpeg для /api/state: что реально доступно в бинаре. */
 export function buildFfmpegDiagnostics(caps: FfmpegCaps, gpu: boolean): FfmpegDiagnostics {
@@ -1051,21 +1052,26 @@ export class Engine {
         const cwd = typeof params.cwd === 'string' ? params.cwd : undefined
         const extraEnv = params.env && typeof params.env === 'object' ? (params.env as Record<string, string>) : {}
         ctx.log(`python ${script} ${args.join(' ')}`)
-        const state = { percent: null as number | null }
+        const duration = numberOrUndefined(params.durationSec) ?? numberOrUndefined(params.totalSec)
+        const totalMs = duration != null && duration > 0 ? Math.round(duration * 1000) : null
+        if (totalMs != null) ctx.progress({ totalMs, phase: 'running' })
+        const apply = (line: string): void => {
+          const parsed = parseProgressLine(line, totalMs)
+          if (!parsed) return
+          ctx.progress({ ...parsed, phase: 'running' })
+        }
         const result = await stream(settings.pythonPath, [script, ...args], {
           cwd,
           env: { ...gpuEnv(settings, self.deviceIndex(device) ?? undefined), ...extraEnv },
           signal: ctx.signal,
           onStdoutLine: (line) => {
             ctx.log(line)
-            const match = /progress[^0-9]{0,12}(\d{1,3})\s*%/i.exec(line)
-            if (match) {
-              const percent = Math.max(0, Math.min(100, Number(match[1])))
-              state.percent = percent
-              ctx.progress({ percent, phase: 'running' })
-            }
+            apply(line)
           },
-          onStderrLine: (line) => ctx.log(line),
+          onStderrLine: (line) => {
+            ctx.log(line)
+            apply(line)
+          },
           tailLines: 300,
         })
         if (result.code !== 0) {
