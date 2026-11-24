@@ -87,6 +87,8 @@ export interface FfmpegParams {
   outputDir?: string
   codec?: 'h264' | 'hevc' | 'av1' | 'copy'
   quality?: 'fast' | 'balanced' | 'quality'
+  /** Переопределяет CQ (NVENC) / CRF (CPU) из пресета quality. */
+  cq?: number
   scale?: string
   fps?: number
   audio?: 'copy' | 'aac' | 'none'
@@ -284,8 +286,18 @@ function seconds(value: number | undefined): string {
 
 
 /** Аргументы выбранного кодировщика: NVENC на GPU, иначе CPU-фолбэк с предупреждением. */
+function withCq(args: string[], cq: number | undefined): string[] {
+  if (cq == null) return args
+  const out = [...args]
+  for (const key of ['-cq', '-crf']) {
+    const index = out.indexOf(key)
+    if (index >= 0) out[index + 1] = String(Math.round(cq))
+  }
+  return out
+}
+
 export function chooseEncoder(
-  params: Pick<FfmpegParams, 'codec' | 'quality'>,
+  params: Pick<FfmpegParams, 'codec' | 'quality' | 'cq'>,
   caps: FfmpegCaps,
   isGpu: boolean,
   deviceIndex: number | null,
@@ -295,7 +307,7 @@ export function chooseEncoder(
   if (codec === 'copy') return { encoder: null, args: ['-c', 'copy'], used: 'copy' }
   const gpuEncoder = NVENC_BY_CODEC[codec]
   if (isGpu && gpuEncoder && caps.encoders.includes(gpuEncoder)) {
-    const quality = QUALITY[params.quality ?? 'balanced'].nvenc
+    const quality = withCq(QUALITY[params.quality ?? 'balanced'].nvenc, params.cq)
     const extra = codec === 'hevc' ? ['-tag:v', 'hvc1'] : []
     const gpuSelector = deviceIndex != null ? ['-gpu', String(deviceIndex)] : []
     return { encoder: gpuEncoder, args: ['-c:v', gpuEncoder, ...gpuSelector, ...quality, ...extra], used: gpuEncoder }
@@ -305,7 +317,7 @@ export function chooseEncoder(
     throw Object.assign(new Error(`No encoder available for codec ${codec}`), { code: 'encoder-missing' })
   }
   if (isGpu) warnings.push(`GPU encoder ${gpuEncoder} is unavailable; falling back to ${cpuEncoder}.`)
-  const quality = QUALITY[params.quality ?? 'balanced'].cpu
+  const quality = withCq(QUALITY[params.quality ?? 'balanced'].cpu, params.cq)
   const extra = codec === 'hevc' ? ['-tag:v', 'hvc1'] : []
   return { encoder: cpuEncoder, args: ['-c:v', cpuEncoder, ...quality, ...extra], used: cpuEncoder }
 }
@@ -330,6 +342,9 @@ export function buildFfmpegPlan(
   deviceIndex: number | null,
 ): FfmpegPlan {
   const warnings: string[] = []
+  if (params.cq != null && (!Number.isFinite(params.cq) || params.cq < 0 || params.cq > 51)) {
+    throw Object.assign(new Error('cq must be between 0 and 51'), { code: 'invalid-args' })
+  }
   const op = params.operation
   const overwrite = params.overwrite === true
   const base = ['-hide_banner', '-nostdin', '-progress', 'pipe:1', '-nostats', overwrite ? '-y' : '-n']
@@ -445,7 +460,14 @@ export function buildFfmpegPlan(
       if (!params.outputDir) throw Object.assign(new Error('outputDir is required'), { code: 'invalid-args' })
       const ext = params.format === 'jpg' ? 'jpg' : 'png'
       const fps = params.everySec && params.everySec > 0 ? 1 / params.everySec : (params.fps ?? 1)
-      argv.push(...base, '-i', params.input, '-vf', `fps=${fps}`, '-q:v', '2', join(params.outputDir, `frame_%06d.${ext}`))
+      const start = params.startSec ?? 0
+      const duration =
+        params.durationSec ?? (params.endSec != null ? Math.max(0, params.endSec - start) : undefined)
+      if (start > 0) argv.push('-ss', seconds(start))
+      argv.push('-i', params.input)
+      if (duration != null && duration > 0) argv.push('-t', seconds(duration))
+      argv.push('-vf', `fps=${fps}`, '-q:v', '2', join(params.outputDir, `frame_%06d.${ext}`))
+      if (duration != null) totalMs = Math.round(duration * 1000)
       operations.push('frames')
       break
     }

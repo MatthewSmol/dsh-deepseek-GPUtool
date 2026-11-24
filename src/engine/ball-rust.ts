@@ -239,6 +239,7 @@ export class RustBallWorker {
   async run(config: BallConfig, ctx: JobContext): Promise<BallResult> {
     await this.start()
     if (!this.child) throw new Error('ball worker is not running')
+    if (this.child.pid != null) ctx.trackPid(this.child.pid)
     if (this.pending) throw new Error('ball worker is busy')
     return await new Promise<BallResult>((resolve, reject) => {
       this.pending = { resolve, reject, ctx }

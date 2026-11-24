@@ -86,6 +86,8 @@ export interface StreamOptions {
   tailLines?: number
   /** Жёсткий лимит времени; при превышении процесс убивается. */
   timeoutMs?: number
+  /** Колбэк после успешного spawn (pid для watchdog задания). */
+  onSpawn?: (pid: number) => void
 }
 
 export interface StreamResult extends RunResult {
@@ -133,6 +135,13 @@ export function stream(command: string, args: string[], options: StreamOptions =
     } catch (error) {
       reject(error)
       return
+    }
+    if (child.pid != null) {
+      try {
+        options.onSpawn?.(child.pid)
+      } catch {
+        /* трекинг не должен ломать запуск */
+      }
     }
     let stdout = ''
     let stderr = ''

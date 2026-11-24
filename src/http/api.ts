@@ -10,6 +10,8 @@ interface ApiOptions {
   port: number
   token: string
   logger?: { info(message: string): void; warn(message: string): void }
+  /** Перезапуск сервиса (вызывает shutdown в MCP-процессе). */
+  restart?: () => void
 }
 
 export interface ApiHandle {
@@ -272,6 +274,16 @@ export async function startApiServer(engine: Engine, options: ApiOptions): Promi
           return
         }
         ok(res, engine.submitSetup(action, meta))
+        return
+      }
+      if (path === '/api/admin/reap' && method === 'POST') {
+        ok(res, await engine.reapJobs())
+        return
+      }
+      if (path === '/api/admin/restart' && method === 'POST') {
+        ok(res, { restarting: true, pid: process.pid })
+        options.logger?.info('admin restart requested')
+        if (options.restart) setTimeout(() => options.restart?.(), 100).unref?.()
         return
       }
       if (path === '/api/settings' && method === 'GET') {

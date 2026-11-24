@@ -33,6 +33,13 @@ Then install the directory with the DSH plugin manager.
 
 ---
 
+## Admin API
+
+- `POST /api/admin/reap` — fail stalled jobs (dead pid/no progress) and unblock
+  the queue.
+- `POST /api/admin/restart` — restart the MCP service process (DSH brings it
+  back). Running jobs are marked `interrupted` on boot.
+
 ## Changelog
 
 ### 1.0.0 — 2026-11-23
@@ -133,6 +140,28 @@ call history.
   `deepseekTimeoutMs` (170 s, under the API's 180 s limit).
 - Tests: +5 (response parsing, multipart against a local server, the key never
   echoed, file limits) for 17 total.
+
+### 1.6.1 — 2026-11-24
+
+- **Queue watchdog**: child pids are tracked (`ctx.trackPid`); a dead process
+  becomes `failed/process-died`, missing progress → `stalled`, timeout →
+  `timeout`; the slot is released and the queue continues.
+- **Running cancel is hard now**: SIGTERM→SIGKILL by pid, and after 5 s the job is
+  force-finalized (`cancelled`) even if the executor hangs.
+- **Admin API**: `POST /api/admin/reap` and `POST /api/admin/restart`; the panel
+  gets a “Reap stalled” button and a “stalled” badge.
+- **State**: `/api/state` and `/api/jobs` expose `alive`, `stalled`, `pids`;
+  `queue` gains `stalled`/`aliveRunning`.
+- **ffmpeg encode**: `cq` (0–51) overrides the preset `-cq`/`-crf`.
+- **ffmpeg frames**: honours `startSec`/`durationSec` (`-ss` before input, `-t`
+  after) — “10 seconds from 300” no longer starts at the beginning.
+- **upscale**: `width`/`height` give an exact target resolution (pre-resize to
+  target/2, then x2), e.g. 1280×720 → 1280×720 without a second pass.
+- **GPU**: `usedByProcessesMB`/`otherMB` show VRAM used outside the namespace
+  (another container/host); auto-selection logs the chosen GPU and free MB and
+  avoids cards with <1 GB free.
+- **device**: a numeric string (`"1"`) is accepted as an index; garbage gets
+  `device must be "auto", "cpu" or an integer GPU index`.
 
 ### 1.6.0 — 2026-11-24
 
@@ -356,6 +385,8 @@ The tool targets ONNX models from the TrackNetV2/V3 and WASB-SBDT families:
   tile value fails with `tiling-not-supported`).
 - Video: NVDEC → CUDA batch → NVENC (`hevc_nvenc`/`h264_nvenc`), audio copied.
   PNG directories work too (PNG decode/encode is CPU, reported separately).
+- Exact target resolution: `width`/`height` (e.g. `1280×720`) — the frame is
+  pre-scaled to `target/2`, then x2 produces exactly the requested size.
 - Speed on RTX 3070, 512×288→1024×576, batch 8: **32.3 fps** (24.1 ms/frame
   inference); 2000 frames in 61.8 s; 25,925 frames (13 chunks) ~13.4 min.
 

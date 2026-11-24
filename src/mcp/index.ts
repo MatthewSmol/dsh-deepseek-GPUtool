@@ -49,7 +49,12 @@ let api: Awaited<ReturnType<typeof startApiServer>> | null = null
 let apiBase = ''
 let shuttingDown = false
 
-const deviceSchema = z.union([z.literal('auto'), z.literal('cpu'), z.number().int().min(0)])
+const deviceSchema = z.union([
+  z.literal('auto'),
+  z.literal('cpu'),
+  z.number().int().min(0),
+  z.string().regex(/^\d+$/, 'device must be "auto", "cpu" or an integer GPU index (number, not string)'),
+])
 
 const mcp = new McpServer(
   { name: 'gputool', version: VERSION },
@@ -178,6 +183,7 @@ mcp.registerTool(
       outputDir: z.string().optional(),
       codec: z.enum(['h264', 'hevc', 'av1', 'copy']).optional(),
       quality: z.enum(['fast', 'balanced', 'quality']).optional(),
+      cq: z.number().optional().describe('Override NVENC -cq / CPU -crf (0–51)'),
       scale: z.string().optional(),
       fps: z.number().optional(),
       audio: z.enum(['copy', 'aac', 'none']).optional(),
@@ -368,6 +374,8 @@ mcp.registerTool(
       output: z.string().optional(),
       model: z.string().optional(),
       batch: z.number().optional(),
+      width: z.number().optional().describe('Target width (even, output is exactly this size)'),
+      height: z.number().optional().describe('Target height (even)'),
       codec: z.enum(['hevc', 'h264']).optional(),
       quality: z.enum(['fast', 'balanced', 'quality']).optional(),
       startSec: z.number().optional(),
@@ -681,7 +689,12 @@ async function main(): Promise<void> {
   const settings = engine.settingsStore.get()
   const port = Number(argValue('--port') ?? settings.httpPort) || 0
   await engine.boot()
-  api = await startApiServer(engine, { port, token: settings.apiToken, logger })
+  api = await startApiServer(engine, {
+    port,
+    token: settings.apiToken,
+    logger,
+    restart: () => void shutdown('admin-restart'),
+  })
   apiBase = `http://127.0.0.1:${api.port}`
   await writeEndpoint({
     pid: process.pid,

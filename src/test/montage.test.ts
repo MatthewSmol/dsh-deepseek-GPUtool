@@ -185,3 +185,55 @@ test('montage rejects missing overlay files before ffmpeg starts', () => {
   }
   assert.throws(() => buildMontagePlan(broken, FULL, defaultSettings(), scenes(), 0, context), (error: any) => error.code === 'overlay-missing')
 })
+
+// --- CQ/CRF и окно извлечения кадров -----------------------------------------
+
+function cqValues(argv: string[], flag: string): number[] {
+  const values: number[] = []
+  for (let index = 0; index < argv.length - 1; index += 1) {
+    if (argv[index] === flag) values.push(Number(argv[index + 1]))
+  }
+  return values
+}
+
+test('encode accepts an explicit cq and passes it to NVENC', () => {
+  const plan = buildFfmpegPlan(
+    { operation: 'encode', input: '/in.mp4', output: '/out.mp4', codec: 'hevc', quality: 'quality', cq: 17, overwrite: true },
+    caps(['scale'], ['hevc_nvenc', 'libx264', 'aac']),
+    defaultSettings(),
+    null,
+    0,
+  )
+  assert.ok(plan.argv.includes('hevc_nvenc'))
+  assert.deepEqual(cqValues(plan.argv, '-cq'), [17], plan.argv.join(' '))
+})
+
+test('encode rejects cq outside 0..51', () => {
+  assert.throws(
+    () =>
+      buildFfmpegPlan(
+        { operation: 'encode', input: '/in.mp4', output: '/out.mp4', cq: 60 },
+        caps(['scale']),
+        defaultSettings(),
+        null,
+        0,
+      ),
+    /cq must be between 0 and 51/,
+  )
+})
+
+test('frames honours startSec and durationSec', () => {
+  const plan = buildFfmpegPlan(
+    { operation: 'frames', input: '/in.mp4', outputDir: '/frames', startSec: 300, durationSec: 10, fps: 1, overwrite: true },
+    caps(['scale']),
+    defaultSettings(),
+    null,
+    0,
+  )
+  const start = plan.argv.indexOf('-ss')
+  const input = plan.argv.indexOf('-i')
+  const end = plan.argv.indexOf('-t')
+  assert.ok(start >= 0 && plan.argv[start + 1] === '300', plan.argv.join(' '))
+  assert.ok(input > start, 'seek must come before the input')
+  assert.ok(end > input && plan.argv[end + 1] === '10', plan.argv.join(' '))
+})

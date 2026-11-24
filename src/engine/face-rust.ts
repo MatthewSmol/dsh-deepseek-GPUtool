@@ -178,6 +178,7 @@ export class RustFaceWorker {
   async run(config: FaceRustConfig, ctx: JobContext): Promise<FaceRustResult> {
     await this.start()
     if (!this.child) throw new Error('rust face worker is not running')
+    if (this.child.pid != null) ctx.trackPid(this.child.pid)
     if (this.pending) throw new Error('rust face worker is busy')
     const id = ctx.job.id
     return await new Promise<FaceRustResult>((resolve, reject) => {

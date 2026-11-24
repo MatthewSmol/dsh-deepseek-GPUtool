@@ -50,6 +50,8 @@ export interface UpscaleParams {
   output?: string
   model?: string
   batch?: number
+  width?: number
+  height?: number
   codec?: 'hevc' | 'h264'
   quality?: 'fast' | 'balanced' | 'quality'
   startSec?: number
@@ -64,6 +66,8 @@ export interface UpscaleConfig {
   output: string
   model: string
   batch: number
+  width?: number
+  height?: number
   overlay?: never
   codec?: 'hevc' | 'h264'
   quality?: string
@@ -101,6 +105,17 @@ export function buildUpscaleConfig(
   if (batch < 1 || batch > 64) {
     throw Object.assign(new Error('batch must be between 1 and 64'), { code: 'invalid-args' })
   }
+  if ((params.width == null) !== (params.height == null)) {
+    throw Object.assign(new Error('width and height must be set together'), { code: 'invalid-args' })
+  }
+  if (params.width != null && params.height != null) {
+    if (!Number.isInteger(params.width) || !Number.isInteger(params.height) || params.width < 2 || params.height < 2) {
+      throw Object.assign(new Error('width/height must be integers >= 2'), { code: 'invalid-args' })
+    }
+    if (params.width % 2 !== 0 || params.height % 2 !== 0) {
+      throw Object.assign(new Error('width/height must be even for x2 upscaling'), { code: 'invalid-args' })
+    }
+  }
   if (!existsSync(source)) throw Object.assign(new Error(`Source not found: ${source}`), { code: 'input-missing' })
   const model = upscaleModelPath(settings, params.model)
   if (!existsSync(model)) throw Object.assign(new Error(`Model not found: ${model}`), { code: 'upscale-model-missing' })
@@ -109,6 +124,8 @@ export function buildUpscaleConfig(
     output,
     model,
     batch,
+    width: params.width,
+    height: params.height,
     codec: params.codec ?? (settings.upscaleCodec as 'hevc' | 'h264') ?? 'hevc',
     quality: params.quality ?? settings.upscaleQuality ?? 'balanced',
     startSec: params.startSec,
@@ -217,6 +234,7 @@ export class RustUpscaleWorker {
   async run(config: UpscaleConfig, ctx: JobContext): Promise<UpscaleResult> {
     await this.start()
     if (!this.child) throw new Error('upscale worker is not running')
+    if (this.child.pid != null) ctx.trackPid(this.child.pid)
     if (this.pending) throw new Error('upscale worker is busy')
     const id = ctx.job.id
     return await new Promise<UpscaleResult>((resolve, reject) => {

@@ -67,6 +67,10 @@ export interface GpuInfo {
   totalMB: number
   usedMB: number
   freeMB: number
+  /** Сколько VRAM занято видимыми compute-процессами. */
+  usedByProcessesMB?: number
+  /** Разница used − процессы: занято вне namespace (другой контейнер/хост). */
+  otherMB?: number
   driver: string
   computeCap: string
 }
@@ -175,6 +179,12 @@ export interface JobRecord {
   logTail: string[]
   logPath: string | null
   hintId: string | null
+  /** pid дочерних процессов задания (для watchdog и жёсткой отмены). */
+  pids?: number[]
+  /** Жив ли ещё процесс running-задания (вычисляется при выдаче). */
+  alive?: boolean
+  /** Нет прогресса дольше порога (вычисляется при выдаче). */
+  stalled?: boolean
 }
 
 export interface CallRecord {
@@ -229,7 +239,7 @@ export interface ServerState {
   gpu: GpuStatus
   doctor: DoctorReport
   jobs: JobRecord[]
-  queue: { running: number; queued: number }
+  queue: { running: number; queued: number; stalled: number; aliveRunning: number }
   leases: LeaseRecord[]
   calls: CallRecord[]
   settings: Omit<Settings, 'apiToken'>
@@ -244,6 +254,8 @@ export interface JobContext {
   progress(patch: Partial<JobProgress>): void
   log(line: string): void
   output(entry: JobOutput): void
+  /** Регистрирует pid дочернего процесса, чтобы watchdog/отмена могли его найти. */
+  trackPid(pid: number): void
 }
 
 export type JobExecutor = (context: JobContext) => Promise<void>

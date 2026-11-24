@@ -39,6 +39,17 @@ export function parseGpuCsv(text: string): GpuInfo[] {
   return gpus.sort((a, b) => a.index - b.index)
 }
 
+/** Добавляет к GPU сумму по процессам и «скрытую» занятость вне namespace. */
+function withProcessUsage(gpus: GpuInfo[], processes: GpuProcess[]): GpuInfo[] {
+  return gpus.map((gpu) => {
+    const usedByProcessesMB = processes
+      .filter((proc) => proc.gpuUuid === gpu.uuid)
+      .reduce((sum, proc) => sum + Math.max(0, proc.usedMB), 0)
+    const otherMB = Math.max(0, gpu.usedMB - usedByProcessesMB)
+    return { ...gpu, usedByProcessesMB, otherMB }
+  })
+}
+
 /** Разбирает CSV-вывод `--query-compute-apps`. */
 export function parseProcessCsv(text: string): GpuProcess[] {
   const processes: GpuProcess[] = []

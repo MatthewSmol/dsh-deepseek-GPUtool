@@ -58,6 +58,12 @@ export interface JobManagerOptions {
   gpuConcurrency: number
   cpuConcurrency: number
   gpuAvailable: () => boolean
+  /** Нет прогресса дольше этого времени → задание считается зависшим. */
+  stallTimeoutMs?: number
+  /** Сколько ждать «мёртвые pid» прежде чем пометить задание failed. */
+  pidDeadGraceMs?: number
+  /** Сколько ждать завершения executor после отмены, прежде чем финализировать принудительно. */
+  cancelGraceMs?: number
   logger?: { info(message: string): void; warn(message: string): void }
 }
 
@@ -76,6 +82,29 @@ interface Runtime {
   logLines: string[]
   logFile: string
   persistTimer: ReturnType<typeof setTimeout> | null
+  /** Дочерние процессы задания (worker/ffmpeg), найденные через ctx.trackPid. */
+  pids: Set<number>
+  /** Время последнего прогресса/лога. */
+  lastActivity: number
+  /** Момент, когда все pid оказались мертвы. */
+  deadSince: number | null
+  /** Жёсткий дедлайн задания, если задан timeoutMs. */
+  deadline: number | null
+  /** Запись уже финализирована watchdog/отменой: executor больше не владеет слотом. */
+  finalized: boolean
+}
+
+const DEFAULT_STALL_MS = 600_000
+const DEFAULT_PID_DEAD_GRACE_MS = 10_000
+const DEFAULT_CANCEL_GRACE_MS = 5_000
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === 'EPERM'
+  }
 }
 
 /** Очередь с полосами по GPU, параллельностью CPU, арендой и историей. */
@@ -204,7 +233,19 @@ export class JobManager {
     const controller = new AbortController()
     const logFile = join(files.logs(), `${job.id}.log`)
     job.logPath = logFile
-    this.runtimes.set(job.id, { controller, logLines: [], logFile, persistTimer: null })
+    job.pids = []
+    const timeoutMs = input.timeoutMs
+    this.runtimes.set(job.id, {
+      controller,
+      logLines: [],
+      logFile,
+      persistTimer: null,
+      pids: new Set<number>(),
+      lastActivity: Date.now(),
+      deadSince: null,
+      deadline: typeof timeoutMs === 'number' && timeoutMs > 0 ? Date.now() + timeoutMs : null,
+      finalized: false,
+    })
     this.executors.set(job.id, executor)
     this.jobs.set(job.id, job)
     this.trimJobs()
@@ -264,6 +305,10 @@ export class JobManager {
     }
     this.persist()
     this.log(job, runtime, `job ${job.id} ${job.kind}/${job.operation} started on ${describeDevice(job.device)}`)
+    const touch = (): void => {
+      runtime.lastActivity = Date.now()
+      runtime.deadSince = null
+    }
     const context: JobContext = {
       job,
       signal: runtime.controller.signal,
@@ -272,48 +317,167 @@ export class JobManager {
         job.progress.phase = phase
         if (message !== undefined) job.progress.message = message
         job.progress.updatedAt = Date.now()
+        job.stalled = false
+        touch()
       },
       progress: (patch) => {
         Object.assign(job.progress, patch)
         job.progress.updatedAt = Date.now()
+        job.stalled = false
+        touch()
         this.schedulePersist()
       },
-      log: (line) => this.log(job, runtime, line),
+      log: (line) => {
+        touch()
+        this.log(job, runtime, line)
+      },
       output: (entry: JobOutput) => {
         job.outputs.push(entry)
+      },
+      trackPid: (pid: number) => {
+        if (!Number.isFinite(pid) || pid <= 0) return
+        runtime.pids.add(pid)
+        if (!job.pids) job.pids = []
+        if (!job.pids.includes(pid)) job.pids.push(pid)
+        touch()
+        this.schedulePersist()
       },
     }
     try {
       await executor(context)
+      if (runtime.finalized) return
       if (runtime.controller.signal.aborted) {
-        this.finish(job, 'cancelled', null, null, { code: 'cancelled', message: 'Job was cancelled' })
+        await this.release(job, runtime, 'cancelled', null, null, { code: 'cancelled', message: 'Job was cancelled' })
       } else {
         job.progress.percent = 100
         job.progress.phase = 'done'
         job.progress.updatedAt = Date.now()
-        this.finish(job, 'succeeded', 0, null, null)
+        await this.release(job, runtime, 'succeeded', 0, null, null)
       }
     } catch (error) {
+      if (runtime.finalized) return
       if (runtime.controller.signal.aborted) {
-        this.finish(job, 'cancelled', null, null, { code: 'cancelled', message: 'Job was cancelled' })
+        await this.release(job, runtime, 'cancelled', null, null, { code: 'cancelled', message: 'Job was cancelled' })
       } else {
-        this.finish(job, 'failed', job.exitCode, null, errorShape(error))
+        await this.release(job, runtime, 'failed', job.exitCode, null, errorShape(error))
       }
-    } finally {
-      job.finishedAt = Date.now()
-      job.durationMs = job.startedAt != null ? job.finishedAt - job.startedAt : null
-      this.running.delete(job.id)
-      if (job.device.kind === 'gpu') {
-        const index = job.device.index ?? 0
-        const next = (this.busyGpu.get(index) ?? 1) - 1
-        if (next <= 0) this.busyGpu.delete(index)
-        else this.busyGpu.set(index, next)
-      }
-      this.executors.delete(job.id)
-      await this.flushLog(job.id)
-      this.persist()
-      this.pump()
     }
+  }
+
+  /** Финализирует запись ровно один раз и освобождает слот очереди. */
+  private async release(
+    job: JobRecord,
+    runtime: Runtime,
+    status: JobStatus,
+    exitCode: number | null,
+    signal: string | null,
+    error: { code: string; message: string; details?: unknown } | null,
+  ): Promise<void> {
+    if (runtime.finalized) return
+    runtime.finalized = true
+    this.finish(job, status, exitCode, signal, error)
+    job.stalled = false
+    job.finishedAt = Date.now()
+    job.durationMs = job.startedAt != null ? job.finishedAt - job.startedAt : null
+    this.running.delete(job.id)
+    if (job.device.kind === 'gpu') {
+      const index = job.device.index ?? 0
+      const next = (this.busyGpu.get(index) ?? 1) - 1
+      if (next <= 0) this.busyGpu.delete(index)
+      else this.busyGpu.set(index, next)
+    }
+    this.executors.delete(job.id)
+    await this.flushLog(job.id)
+    this.persist()
+    this.pump()
+  }
+
+  private killPids(runtime: Runtime): void {
+    for (const pid of runtime.pids) {
+      if (!pidAlive(pid)) continue
+      try {
+        process.kill(pid, 'SIGTERM')
+      } catch {
+        /* уже мёртв */
+      }
+    }
+    if (!runtime.pids.size) return
+    const timer = setTimeout(() => {
+      for (const pid of runtime.pids) {
+        if (!pidAlive(pid)) continue
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch {
+          /* уже мёртв */
+        }
+      }
+    }, 3_000)
+    timer.unref?.()
+  }
+
+  /** Проверяет живость running-задания: pid, прогресс и дедлайн. */
+  private async inspect(): Promise<string[]> {
+    const now = Date.now()
+    const failed: string[] = []
+    for (const id of [...this.running]) {
+      const job = this.jobs.get(id)
+      const runtime = this.runtimes.get(id)
+      if (!job || !runtime || runtime.finalized) continue
+      if (runtime.deadline != null && now > runtime.deadline) {
+        this.killPids(runtime)
+        await this.release(job, runtime, 'failed', job.exitCode, null, {
+          code: 'timeout',
+          message: 'Job exceeded its timeout',
+        })
+        failed.push(id)
+        continue
+      }
+      const hasPids = runtime.pids.size > 0
+      const alivePids = hasPids ? [...runtime.pids].filter(pidAlive) : []
+      if (hasPids) {
+        runtime.deadSince = alivePids.length === 0 ? (runtime.deadSince ?? now) : null
+        if (alivePids.length === 0) {
+          if (now - (runtime.deadSince ?? now) > (this.options.pidDeadGraceMs ?? DEFAULT_PID_DEAD_GRACE_MS)) {
+            await this.release(job, runtime, 'failed', job.exitCode, null, {
+              code: 'process-died',
+              message: 'The job process exited without reporting a result',
+            })
+            failed.push(id)
+          }
+          continue
+        }
+      }
+      const stale = now - runtime.lastActivity > (this.options.stallTimeoutMs ?? DEFAULT_STALL_MS)
+      if (!stale) continue
+      if (!hasPids) {
+        await this.release(job, runtime, 'failed', job.exitCode, null, {
+          code: 'stalled',
+          message: `No progress for ${Math.round((now - runtime.lastActivity) / 1000)} s`,
+        })
+        failed.push(id)
+      } else {
+        // Процесс жив, но молчит: показываем «зависло», не убиваем вслепую.
+        job.stalled = true
+      }
+    }
+    return failed
+  }
+
+  /** Ручной reap: немедленно прогнать watchdog и вернуть освобождённые задания. */
+  async reap(): Promise<{ failed: string[]; running: number; queued: number }> {
+    const failed = await this.inspect()
+    this.pump()
+    return { failed, running: this.running.size, queued: this.queue.length }
+  }
+
+  /** Живо ли running-задание (для /api/state). */
+  isAlive(id: string): boolean {
+    const job = this.jobs.get(id)
+    const runtime = this.runtimes.get(id)
+    if (!job || job.status !== 'running' || !runtime) return false
+    if (runtime.finalized) return false
+    if (runtime.pids.size) return [...runtime.pids].some(pidAlive)
+    return !job.stalled
   }
 
   private finish(
@@ -382,7 +546,12 @@ export class JobManager {
   }
 
   private clone(job: JobRecord): JobRecord {
-    return structuredClone(job)
+    const copy = structuredClone(job)
+    if (copy.status === 'running') {
+      copy.alive = this.isAlive(copy.id)
+      copy.stalled = copy.stalled === true
+    }
+    return copy
   }
 
   get(id: string): JobRecord | null {
@@ -398,11 +567,16 @@ export class JobManager {
       .map((job) => this.clone(job))
   }
 
-  queueInfo(): { running: number; queued: number } {
-    return {
-      running: this.running.size,
-      queued: this.queue.length,
+  queueInfo(): { running: number; queued: number; stalled: number; aliveRunning: number } {
+    let stalled = 0
+    let aliveRunning = 0
+    for (const id of this.running) {
+      const job = this.jobs.get(id)
+      if (!job) continue
+      if (job.stalled) stalled += 1
+      if (this.isAlive(id)) aliveRunning += 1
     }
+    return { running: this.running.size, queued: this.queue.length, stalled, aliveRunning }
   }
 
   cancel(id: string): boolean {
@@ -421,7 +595,14 @@ export class JobManager {
     }
     if (job.status !== 'running') return false
     const runtime = this.runtimes.get(id)
-    runtime?.controller.abort()
+    if (!runtime || runtime.finalized) return false
+    runtime.controller.abort()
+    this.killPids(runtime)
+    // Если executor не завершится сам — финализируем запись и освободим слот.
+    const timer = setTimeout(() => {
+      void this.release(job, runtime, 'cancelled', null, null, { code: 'cancelled', message: 'Job was cancelled' })
+    }, this.options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS)
+    timer.unref?.()
     return true
   }
 
@@ -461,12 +642,13 @@ export class JobManager {
     return [...this.leases.values()].sort((a, b) => a.createdAt - b.createdAt)
   }
 
-  /** Периодически освобождает истёкшую аренду и разблокирует очередь. */
+  /** Периодически освобождает истёкшую аренду, гоняет watchdog и разблокирует очередь. */
   startSweeper(): () => void {
     const timer = setInterval(() => {
       const before = this.leases.size
       this.leasesList()
       if (this.leases.size !== before) this.pump()
+      void this.inspect()
     }, 5_000)
     timer.unref?.()
     return () => clearInterval(timer)

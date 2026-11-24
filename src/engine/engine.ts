@@ -58,7 +58,27 @@ import {
 } from './upscale-rust.js'
 import { run, stream } from './proc.js'
 
-export const VERSION = '1.6.0'
+export const VERSION = '1.6.1'
+
+/** Приводит device к auto|cpu|number; numeric-string допустим ("1" → 1). */
+export function normalizeDeviceParam(requested: unknown): 'auto' | 'cpu' | number | undefined {
+  if (requested == null || requested === 'auto' || requested === 'cpu') {
+    return requested as 'auto' | 'cpu' | undefined
+  }
+  if (typeof requested === 'number') {
+    if (!Number.isInteger(requested) || requested < 0) {
+      throw errWithCode('device index must be a non-negative integer', 'invalid-args')
+    }
+    return requested
+  }
+  if (typeof requested === 'string' && /^\d+$/.test(requested.trim())) {
+    return Number(requested.trim())
+  }
+  throw errWithCode(
+    `device must be "auto", "cpu" or an integer GPU index (got ${JSON.stringify(requested)})`,
+    'invalid-args',
+  )
+}
 
 /** Метаданные личности вызывающего из MCP-инструментов или HTTP-запросов. */
 export interface SubmitMeta {
@@ -168,6 +188,7 @@ export class Engine {
       gpuConcurrency: this.settingsStore.get().gpuConcurrency,
       cpuConcurrency: this.settingsStore.get().cpuConcurrency,
       gpuAvailable: () => this.gpuCache.available,
+      stallTimeoutMs: Math.max(5_000, Number(process.env.GPUTOOL_JOB_STALL_MS ?? 600_000) || 600_000),
       logger,
     })
     this.doctor = new Doctor({
@@ -290,8 +311,10 @@ export class Engine {
     return `node ${server} --stdio`
   }
 
-  private resolveDevice(requested: 'auto' | number | 'cpu' | undefined, requireGpu: boolean, allowCpu: boolean): DeviceRef {
+  private resolveDevice(requested: 'auto' | number | string | 'cpu' | undefined, requireGpu: boolean, allowCpu: boolean): DeviceRef {
     const gpu = this.gpuCache
+    const normalized = normalizeDeviceParam(requested)
+    requested = normalized
     if (requested === 'cpu') return { kind: 'cpu' }
     if (typeof requested === 'number') {
       const found = gpu.gpus.find((entry) => entry.index === requested)
@@ -305,8 +328,12 @@ export class Engine {
       return { kind: 'cpu' }
     }
     if (gpu.available && gpu.gpus.length) {
-      const best = [...gpu.gpus].sort((a, b) => b.freeMB - a.freeMB)[0]
-      if (best) return { kind: 'gpu', index: best.index, name: best.name }
+      const sorted = [...gpu.gpus].sort((a, b) => b.freeMB - a.freeMB || a.index - b.index)
+      const best = sorted.find((entry) => entry.freeMB >= 1024) ?? sorted[0]
+      if (best) {
+        this.logger.info(`auto device: GPU ${best.index} (${best.name}, free ${best.freeMB} MB)`)
+        return { kind: 'gpu', index: best.index, name: best.name }
+      }
     }
     if (requireGpu) {
       throw errWithCode('No GPU is available to the GPU tool service', 'gpu-unavailable', {
@@ -574,7 +601,11 @@ export class Engine {
           const output = outputs[index] as string
           await ensureParent(output)
           const config = buildUpscaleConfig(params, settings, source, output)
-          ctx.log(`upscale: ${basename(source)} x2 batch=${config.batch} model=${basename(config.model)}`)
+          ctx.log(
+            `upscale: ${basename(source)} x2 batch=${config.batch} ` +
+              (config.width && config.height ? `target=${config.width}x${config.height} ` : '') +
+              `model=${basename(config.model)}`,
+          )
           ctx.phase('upscaling', basename(source))
           const result = await worker.run(config, ctx)
           ctx.log(
@@ -1080,6 +1111,11 @@ export class Engine {
         }
       },
     )
+  }
+
+  /** Ручной reap: снимает зависшие задания и разблокирует очередь. */
+  async reapJobs(): Promise<{ failed: string[]; running: number; queued: number }> {
+    return await this.jobs.reap()
   }
 
   listJobs(limit = 50, activeOnly = false): JobRecord[] {

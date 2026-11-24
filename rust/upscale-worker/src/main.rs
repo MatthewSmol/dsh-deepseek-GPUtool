@@ -48,6 +48,12 @@ struct Config {
     ffprobe_path: Option<String>,
     #[serde(default)]
     overwrite: Option<bool>,
+    /// Целевая ширина результата (должна быть чётной; модель всегда x2).
+    #[serde(default)]
+    width: Option<u32>,
+    /// Целевая высота результата.
+    #[serde(default)]
+    height: Option<u32>,
 }
 
 impl Config {
@@ -60,6 +66,20 @@ impl Config {
     fn ffprobe(&self) -> String {
         self.ffprobe_path.clone().unwrap_or_else(|| "ffprobe".to_string())
     }
+    /// Полуразмер входа для целевого разрешения: модель x2 даёт ровно target.
+    fn target_half(&self) -> Result<Option<(u32, u32)>> {
+        match (self.width, self.height) {
+            (None, None) => Ok(None),
+            (Some(width), Some(height)) => {
+                if width < 2 || height < 2 || width % 2 != 0 || height % 2 != 0 {
+                    bail!("invalid-target: width/height должны быть чётными и >= 2");
+                }
+                Ok(Some((width / 2, height / 2)))
+            }
+            _ => bail!("invalid-target: width и height задаются только вместе"),
+        }
+    }
+
     fn check_tile(&self) -> Result<()> {
         if self.tile.unwrap_or(0) > 0 {
             bail!("tiling-not-supported: тайлинг удалён, кадр идёт целиком (tile=0)");
@@ -242,15 +262,36 @@ fn collect_frames(source: &Path) -> Result<Vec<PathBuf>> {
 fn run_frames(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Value> {
     let source = Path::new(&config.source);
     let frames = collect_frames(source)?;
-    let output_dir = config
-        .output
-        .clone()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| source.parent().unwrap_or_else(|| Path::new(".")).to_path_buf());
-    fs::create_dir_all(&output_dir)?;
+    let single = source.is_file();
+    let output_dir = if single {
+        config
+            .output
+            .clone()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| source.with_file_name(format!(
+                "{}_x2.png",
+                source.file_stem().and_then(|value| value.to_str()).unwrap_or("image")
+            )))
+    } else {
+        config
+            .output
+            .clone()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| source.to_path_buf())
+    };
+    if single {
+        if let Some(parent) = output_dir.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+    } else {
+        fs::create_dir_all(&output_dir)?;
+    }
     let total = frames.len();
     let batch_size = config.batch();
     let started = Instant::now();
+    let target = config.target_half()?;
     let mut decode_ns = 0u128;
     let mut infer_ns = 0u128;
     let mut encode_ns = 0u128;
@@ -261,20 +302,22 @@ fn run_frames(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Val
         let mut decoded: Vec<(usize, usize, Vec<u8>)> = Vec::with_capacity(chunk.len());
         let t_decode = Instant::now();
         for path in chunk {
-            decoded.push(decode_frame(path)?);
+            let (width, height, data) = decode_frame(path)?;
+            let (data, width, height) = prepare_frame(&data, width, height, target)?;
+            decoded.push((width, height, data));
         }
         decode_ns += t_decode.elapsed().as_nanos();
         let (width, height) = (decoded[0].0, decoded[0].1);
         if decoded.iter().any(|(w, h, _)| *w != width || *h != height) {
             // Разные размеры — обрабатываем по одному, чтобы не ломать батч.
             for (index, path) in chunk.iter().enumerate() {
-                let single = decoded[index].2.clone();
+                let frame_data = decoded[index].2.clone();
                 let t_infer = Instant::now();
-                let mut out = upscaler.upscale_batch(&[single.as_slice()], width, height)?;
+                let mut out = upscaler.upscale_batch(&[frame_data.as_slice()], width, height)?;
                 infer_ns += t_infer.elapsed().as_nanos();
                 let t_encode = Instant::now();
-                let target = output_path(config, path, &output_dir);
-                encode_frame(&target, width * 2, height * 2, &out.remove(0))?;
+                let target_path = output_path(single, path, &output_dir);
+                encode_frame(&target_path, width * 2, height * 2, &out.remove(0))?;
                 encode_ns += t_encode.elapsed().as_nanos();
                 done += 1;
             }
@@ -286,7 +329,7 @@ fn run_frames(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Val
         infer_ns += t_infer.elapsed().as_nanos();
         let t_encode = Instant::now();
         for (index, path) in chunk.iter().enumerate() {
-            let target = output_path(config, path, &output_dir);
+            let target = output_path(single, path, &output_dir);
             encode_frame(&target, width * 2, height * 2, &outputs[index])?;
         }
         encode_ns += t_encode.elapsed().as_nanos();
@@ -310,16 +353,17 @@ fn run_frames(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Val
         "decodeMsPerFrame": (decode_ns as f64 / 1e6 / done.max(1) as f64 * 100.0).round() / 100.0,
         "encodeMsPerFrame": (encode_ns as f64 / 1e6 / done.max(1) as f64 * 100.0).round() / 100.0,
         "elapsedMs": elapsed.as_millis(),
-        "outputDir": output_dir.to_string_lossy(),
+        "output": output_dir.to_string_lossy(),
+        "directory": !single,
     }))
 }
 
-fn output_path(config: &Config, source: &Path, output_dir: &Path) -> PathBuf {
-    if config.output.is_some() && !output_dir.is_dir() {
-        return output_dir.to_path_buf();
+fn output_path(single: bool, source: &Path, output: &Path) -> PathBuf {
+    if single {
+        return output.to_path_buf();
     }
     let stem = source.file_stem().and_then(|value| value.to_str()).unwrap_or("frame");
-    output_dir.join(format!("{stem}_x2.png"))
+    output.join(format!("{stem}_x2.png"))
 }
 
 // ------------------------------------------------------------------ видео
@@ -384,12 +428,14 @@ fn run_video(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Valu
     let source = Path::new(&config.source);
     let started = Instant::now();
     let (width, height, source_fps, source_duration, has_audio) = probe_video(config, source)?;
+    let target = config.target_half()?;
     let fps = config.fps.unwrap_or(source_fps);
     let start = config.start_sec.unwrap_or(0.0).max(0.0);
     let duration = config.duration_sec.unwrap_or_else(|| (source_duration - start).max(0.0));
     let total_frames = ((duration * fps).round() as usize).max(1);
-    let out_w = width * 2;
-    let out_h = height * 2;
+    let (in_w, in_h) = target.map(|(w, h)| (w, h)).unwrap_or((width, height));
+    let out_w = in_w * 2;
+    let out_h = in_h * 2;
     let output_path = config.output.clone().map(PathBuf::from).unwrap_or_else(|| {
         source.with_file_name(format!(
             "{}.x2.mp4",
@@ -472,7 +518,10 @@ fn run_video(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Valu
         for _ in 0..batch_size {
             let mut frame = vec![0u8; frame_bytes];
             match decoder_out.read_exact(&mut frame) {
-                Ok(()) => frames.push(frame),
+                Ok(()) => {
+                    let (data, _, _) = prepare_frame(&frame, width as usize, height as usize, target)?;
+                    frames.push(data);
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
                 Err(error) => {
                     failure = Some(anyhow!("decode-failed: {error}"));
@@ -488,7 +537,7 @@ fn run_video(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Valu
         }
         let refs: Vec<&[u8]> = frames.iter().map(|frame| frame.as_slice()).collect();
         let t_infer = Instant::now();
-        let outputs = match upscaler.upscale_batch(&refs, width as usize, height as usize) {
+        let outputs = match upscaler.upscale_batch(&refs, in_w as usize, in_h as usize) {
             Ok(outputs) => outputs,
             Err(error) => {
                 failure = Some(error);
@@ -557,8 +606,24 @@ fn run_video(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Valu
 
 // ------------------------------------------------------------------ прогон
 
+fn resize_rgb(data: &[u8], width: usize, height: usize, target_w: usize, target_h: usize) -> Result<Vec<u8>> {
+    let image = image::RgbImage::from_raw(width as u32, height as u32, data.to_vec())
+        .ok_or_else(|| anyhow!("bad frame buffer"))?;
+    let resized = image::imageops::resize(&image, target_w as u32, target_h as u32, image::imageops::FilterType::Lanczos3);
+    Ok(resized.into_raw())
+}
+
+fn prepare_frame(data: &[u8], width: usize, height: usize, target: Option<(u32, u32)>) -> Result<(Vec<u8>, usize, usize)> {
+    match target {
+        None => Ok((data.to_vec(), width, height)),
+        Some((half_w, half_h)) if half_w as usize == width && half_h as usize == height => Ok((data.to_vec(), width, height)),
+        Some((half_w, half_h)) => Ok((resize_rgb(data, width, height, half_w as usize, half_h as usize)?, half_w as usize, half_h as usize)),
+    }
+}
+
 fn run_job(job: &str, config: &Config, upscaler: &mut Option<Upscaler>) -> Result<Value> {
     config.check_tile()?;
+    config.target_half()?;
     if upscaler.is_none() {
         let started = Instant::now();
         let loaded = Upscaler::load(Path::new(&config.model))?;
@@ -713,6 +778,8 @@ mod tests {
             ffmpeg_path: None,
             ffprobe_path: None,
             overwrite: None,
+            width: None,
+            height: None,
         }
     }
 
@@ -736,17 +803,26 @@ mod tests {
     }
 
     #[test]
+    fn target_size_is_even_and_complete() {
+        let mut cfg = config("/tmp/x");
+        assert_eq!(cfg.target_half().unwrap(), None);
+        cfg.width = Some(1280);
+        cfg.height = Some(720);
+        assert_eq!(cfg.target_half().unwrap(), Some((640, 360)));
+        cfg.width = Some(1281);
+        assert!(cfg.target_half().is_err());
+        cfg.width = Some(1280);
+        cfg.height = None;
+        assert!(cfg.target_half().is_err());
+    }
+
+    #[test]
     fn frame_paths_are_sorted_and_suffixed() {
         let dir = std::env::temp_dir();
         let a = dir.join("b.png");
         let b = dir.join("a.png");
-        assert!(output_path(&conv(&dir), &b, &dir).to_string_lossy().ends_with("a_x2.png"));
-        assert!(output_path(&conv(&dir), &a, &dir).to_string_lossy().ends_with("b_x2.png"));
+        assert!(output_path(false, &b, &dir).to_string_lossy().ends_with("a_x2.png"));
+        assert!(output_path(false, &a, &dir).to_string_lossy().ends_with("b_x2.png"));
     }
 
-    fn conv(dir: &Path) -> Config {
-        let mut cfg = config("/tmp/x");
-        cfg.output = Some(dir.to_string_lossy().into_owned());
-        cfg
-    }
 }

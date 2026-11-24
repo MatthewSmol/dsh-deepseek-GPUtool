@@ -72,6 +72,9 @@ export interface Job {
   outputs: Array<{ path: string; bytes: number | null }>
   error: { code: string; message: string } | null
   logTail: string[]
+  pids?: number[]
+  alive?: boolean
+  stalled?: boolean
 }
 
 export interface Call {
@@ -423,6 +426,23 @@ export function createPanel(ui: Ui): (props: any) => any {
       return h(
         'div',
         { className: 'gputool-jobs' },
+        h(
+          'div',
+          { className: 'gputool-card-head' },
+          h('span', { className: 'gputool-muted' }, `${tr('jobs.queue')}: ${state?.queue?.running ?? 0} / ${state?.queue?.queued ?? 0}`),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'gputool-btn',
+              onClick: (event: any) => {
+                event.stopPropagation()
+                void fetch('/gputool/api/admin/reap', { method: 'POST' })
+              },
+            },
+            tr('jobs.reap'),
+          ),
+        ),
         ...jobs.map((job) =>
           h(
             'div',
@@ -433,7 +453,12 @@ export function createPanel(ui: Ui): (props: any) => any {
               h(Pill, { status: job.status, tr }),
               h('strong', null, `${job.kind}/${job.operation}`),
               h(WhoCell, { who: job.who, tr }),
-              h('span', { className: 'gputool-muted' }, `${job.device.kind === 'gpu' ? `GPU ${job.device.index ?? 0}` : tr('device.cpu')} · ${fmtDuration(job.durationMs ?? (job.startedAt ? Date.now() - job.startedAt : null))}`),
+              h(
+                'span',
+                { className: 'gputool-muted' },
+                `${job.device.kind === 'gpu' ? `GPU ${job.device.index ?? 0}` : tr('device.cpu')} · ${fmtDuration(job.durationMs ?? (job.startedAt ? Date.now() - job.startedAt : null))}` +
+                  (job.stalled ? ` · ${tr('jobs.stalled')}` : ''),
+              ),
               job.status === 'running' || job.status === 'queued'
                 ? h(
                     'button',

@@ -80,3 +80,17 @@ test('valid config carries batch, codec and both ffmpeg paths', () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('upscale target size must be even and set as width+height together', () => {
+  const { dir, source, model } = fixture()
+  try {
+    const settings = { ...defaultSettings(), upscaleModelPath: model }
+    assert.throws(() => buildUpscaleConfig({ width: 1280 }, settings, source, join(dir, 'out.png')), /set together/)
+    assert.throws(() => buildUpscaleConfig({ width: 1281, height: 720 }, settings, source, join(dir, 'out.png')), /must be even/)
+    const config = buildUpscaleConfig({ width: 1280, height: 720 }, settings, source, join(dir, 'out.png'))
+    assert.equal(config.width, 1280)
+    assert.equal(config.height, 720)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

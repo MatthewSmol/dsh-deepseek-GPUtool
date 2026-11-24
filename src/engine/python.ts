@@ -154,6 +154,7 @@ export async function runPythonWorker(options: WorkerOptions): Promise<unknown> 
     signal: ctx.signal,
     onStdoutLine: onLine,
     onStderrLine: (line) => ctx.log(line),
+    onSpawn: (pid) => ctx.trackPid(pid),
     tailLines: 300,
     timeoutMs: options.timeoutMs,
   })
