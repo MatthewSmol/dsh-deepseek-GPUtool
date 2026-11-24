@@ -287,7 +287,6 @@ fn infer_session(session: &mut Session, channels: usize, width: u32, height: u32
 
 struct Resizer {
     src_w: usize,
-    src_h: usize,
     width: usize,
     height: usize,
     x0: Vec<usize>,
@@ -319,7 +318,7 @@ impl Resizer {
         };
         let (x0, x1, wx) = axis(width, src_w, sx);
         let (y0, y1, wy) = axis(height, src_h, sy);
-        Self { src_w, src_h, width, height, x0, x1, wx, y0, y1, wy }
+        Self { src_w, width, height, x0, x1, wx, y0, y1, wy }
     }
 
     fn resize(&self, rgb: &[u8]) -> Vec<f32> {
@@ -1001,7 +1000,8 @@ fn normalize_preset(override_name: Option<&str>, model: &str) -> Option<([f32; 3
         Some("none") => None,
         Some("imagenet") => Some(imagenet),
         _ => {
-            if model.to_ascii_lowercase().contains("wasb") {
+            let name = model.to_ascii_lowercase();
+            if name.contains("wasb") || name.contains("blurball") {
                 Some(imagenet)
             } else {
                 None

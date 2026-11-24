@@ -58,7 +58,7 @@ import {
 } from './upscale-rust.js'
 import { run, stream } from './proc.js'
 
-export const VERSION = '1.5.1'
+export const VERSION = '1.5.2'
 
 /** Метаданные личности вызывающего из MCP-инструментов или HTTP-запросов. */
 export interface SubmitMeta {

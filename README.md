@@ -128,6 +128,22 @@ npm test
 - Тесты: +5 (разбор ответа, multipart на локальный сервер, отсутствие ключа в
   тексте ошибки, лимиты файла) — всего 17.
 
+### 1.5.2 — 2026-11-24
+
+- **BlurBall как основная модель детекции мяча** (настольный теннис, MIT):
+  веса лежат в репозитории `mrzkp/blurball` (`best_model` — SE-вариант, F1
+  видео-инференса **0.959** по метаданным чекпойнта), экспорт в ONNX —
+  `scripts/export_blurball_onnx.py` (авто-определение SE, вход `[1,9,288,512]`,
+  выход `[1,3,288,512]`).
+- Нормализация ImageNet теперь включается автоматически и по имени `blurball`
+  (раньше только `wasb`); sigmoid не дублируется — BlurBall уже отдаёт
+  вероятности.
+- На реальном клипе 1280×720@25 (20 с): **488/502 кадров** с мячом,
+  **324 реальные детекции** (было 274 у WASB), средняя уверенность **0.794**,
+  14,5 с вместе с разметкой; точка проверена пиксельно (conf 0.965).
+- README: BlurBall — рекомендуемый путь, WASB остаётся альтернативой;
+  версия 1.5.2.
+
 ### 1.5.1 — 2026-11-24
 
 - **Скачаны реальные веса WASB-SBDT** (`wasb_tennis_best.pth.tar`, 6,1 МБ, MIT)
@@ -273,9 +289,27 @@ torch.onnx.export(model, torch.zeros(1, 9, 288, 512), "tracknetv2.onnx",
 [WASB-SBDT](https://github.com/nttcom/WASB-SBDT) (теннисные веса MIT). Модель
 подключается путём `ballModelPath` или `GPUTOOL_BALL_MODEL`, в git не входит.
 
-### Готовые веса WASB (теннис) и экспорт в ONNX
+### Готовые веса BlurBall (настольный теннис) — рекомендуемый путь
 
-Проверенный путь для настольного тенниса — WASB-SBDT (HRNet), веса MIT:
+BlurBall — форк WASB-SBDT для настольного тенниса, веса лежат прямо в
+репозитории (MIT), F1 видео-инференса 0.959 по метаданным чекпойнта:
+
+```bash
+git clone --depth 1 https://github.com/mrzkp/blurball ~/.cache/gputool/blurball
+
+/home/main/test/.venv/cv312/bin/python scripts/export_blurball_onnx.py \
+  --repo ~/.cache/gputool/blurball \
+  --weights ~/.cache/gputool/blurball/best_model \
+  --output ~/.dsh/gputool/models/ball/blurball_tt.onnx
+# вход [1,9,288,512], выход [1,3,288,512], sha256 c364b96d…
+```
+
+`best_model` — SE-вариант, `blurball_best` — базовая архитектура; скрипт
+определяет вариант сам. Нормализация ImageNet включается по имени файла.
+
+#### Альтернатива: WASB-SBDT
+
+Веса WASB-SBDT (HRNet), MIT:
 
 ```bash
 curl -L -o ~/.dsh/gputool/models/ball/wasb_tennis_best.pth.tar \

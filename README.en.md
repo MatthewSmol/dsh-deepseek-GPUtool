@@ -126,6 +126,19 @@ call history.
 - Tests: +5 (response parsing, multipart against a local server, the key never
   echoed, file limits) for 17 total.
 
+### 1.5.2 — 2026-11-24
+
+- **BlurBall is now the primary ball detector** (table tennis, MIT): weights live
+  in `mrzkp/blurball` (`best_model`, SE variant, checkpoint video-inference F1
+  **0.959**), exported to ONNX by `scripts/export_blurball_onnx.py` (auto SE
+  detection, input `[1,9,288,512]`, output `[1,3,288,512]`).
+- ImageNet normalization is now auto-enabled for `blurball` filenames too; no
+  extra sigmoid is applied because BlurBall already outputs probabilities.
+- Real 1280×720@25 clip (20 s): **488/502 frames** with the ball (324 real
+  detections vs 274 for WASB), mean confidence **0.794**, 14.5 s including
+  annotation; the dot was verified pixel-wise (conf 0.965).
+- README recommends BlurBall, WASB stays as an alternative; version 1.5.2.
+
 ### 1.5.1 — 2026-11-24
 
 - **Real WASB-SBDT weights downloaded** (`wasb_tennis_best.pth.tar`, 6.1 MB, MIT)
@@ -260,9 +273,22 @@ call history.
 }
 ```
 
-### Ready WASB (tennis) weights and ONNX export
+### Ready BlurBall (table tennis) weights — recommended
 
-The verified table-tennis path is WASB-SBDT (HRNet), MIT weights:
+BlurBall is a WASB-SBDT fork for table tennis; weights are in the repository
+(MIT), checkpoint video-inference F1 is 0.959:
+
+```bash
+git clone --depth 1 https://github.com/mrzkp/blurball ~/.cache/gputool/blurball
+python scripts/export_blurball_onnx.py --repo ~/.cache/gputool/blurball \
+  --weights ~/.cache/gputool/blurball/best_model \
+  --output ~/.dsh/gputool/models/ball/blurball_tt.onnx
+```
+
+`best_model` is the SE variant, `blurball_best` the baseline; the script picks
+the right one. ImageNet normalization is enabled from the filename.
+
+#### Alternative: WASB-SBDT
 
 ```bash
 curl -L -o ~/.dsh/gputool/models/ball/wasb_tennis_best.pth.tar \
