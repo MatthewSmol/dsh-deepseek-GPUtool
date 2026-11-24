@@ -297,3 +297,16 @@ order is scenes → overlays → audio, so voice tracks stay independent.
   see `AGENTS.md`.
 - A PP-OCRv5 dictionary and a default scoreboard region.
 - Pushing progress to the panel instead of polling once per second.
+
+## Supporting the project
+
+The plugin is free. If it saved you time, you can support development.
+
+| Network | Address |
+| --- | --- |
+| BTC | `bc1qmvw20wke93dtnf0hzzuqlg0fxkgxfxsnsz9xe7` |
+| ETH | `0x6888d4d2Bbc1776432AA32e02f50DdBeFDeE31Af` |
+| SOL | `AXAMj68npvibHCg1hNqX7b51iGTeQqKuMeaQY6asmoXL` |
+| GRAM | `UQAH2_xVEAa2AkTfvZ5f5c_kLwJ7JflcEMgcKb4rWucC41q5` |
+| ADA | `addr1q9lclrf04dvdfnv9n2u0nxf3ps4lwsuc0ptmuha4nk5cnxq0w5zns4f6a2qjrdnaklkgxdgmhy7tqeg99ut4enzkx84s08dqty` |
+| TRX | `TCrfaBYqi4ar7n2FwrtvxT2exvbbYcToNq` |
