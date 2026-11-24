@@ -165,7 +165,7 @@ export async function startApiServer(engine: Engine, options: ApiOptions): Promi
         else if (type === 'ocr') job = engine.submitOcr(params, meta)
         else if (type === 'python') job = engine.submitPython(params, meta)
         else if (type === 'setup') job = engine.submitSetup(String(params.action ?? ''), meta)
-        else throw new HttpError(400, 'unknown-type', 'type must be ffmpeg|yolo|onnx|face|upscale|ocr|python|setup')
+        else throw new HttpError(400, 'unknown-type', 'type must be ffmpeg|yolo|onnx|face|upscale|ball|ocr|python|setup')
         engine.addCall({
           tool: `http:${type}`,
           operation: typeof params.operation === 'string' ? params.operation : null,

@@ -43,6 +43,12 @@ import { pythonProbe, pythonScript, runPythonWorker } from './python.js'
 import { DeepseekOcrError, runDeepseekOcr, type DeepseekOcrResult } from './deepseek-ocr.js'
 import { RustFaceWorker, rustFaceAvailable } from './face-rust.js'
 import {
+  RustBallWorker,
+  ballAvailable,
+  buildBallConfig,
+  type BallParams,
+} from './ball-rust.js'
+import {
   RustUpscaleWorker,
   buildUpscaleConfig,
   isImageSource,
@@ -52,7 +58,7 @@ import {
 } from './upscale-rust.js'
 import { run, stream } from './proc.js'
 
-export const VERSION = '1.4.0'
+export const VERSION = '1.5.0'
 
 /** Метаданные личности вызывающего из MCP-инструментов или HTTP-запросов. */
 export interface SubmitMeta {
@@ -137,6 +143,9 @@ export class Engine {
 
   /** Постоянный GPU-воркер апскейла 4x-UltraSharp. */
   private upscaleWorker: RustUpscaleWorker | null = null
+
+  /** Постоянный воркер трекинга мяча (TrackNet/WASB ONNX). */
+  private ballWorker: RustBallWorker | null = null
 
   /** Ключ DeepSeek: сначала credential-store, затем переменная окружения. */
   async deepseekKey(settings: Settings): Promise<string> {
@@ -576,6 +585,57 @@ export class Engine {
         }
       },
     )
+  }
+
+  /** Трекинг мяча настольного тенниса: ONNX TrackNet/WASB + разметка видео. */
+  async submitBall(params: BallParams, meta: SubmitMeta): Promise<JobRecord> {
+    const settings = this.settingsStore.get()
+    const source = params.source
+    if (!source) throw errWithCode('source is required', 'invalid-args')
+    if (!existsSync(source)) throw errWithCode(`Source not found: ${source}`, 'input-missing')
+    const availability = ballAvailable(settings, params.model)
+    if (!availability.ok) {
+      const code = availability.reason.startsWith('model not found') ? 'ball-model-missing' : 'ball-worker-missing'
+      throw errWithCode(availability.reason, code)
+    }
+    const device = this.resolveDevice(params.device, false, true)
+    const deviceKind = params.device === 'cpu' ? 'cpu' : device.kind === 'gpu' ? 'cuda' : 'cpu'
+    const outputDir = params.outputDir ?? join(settings.outputRoot, `ball-${Date.now()}`)
+    if (params.annotate !== false && !params.overwrite) {
+      const video = join(outputDir, 'ball.mp4')
+      if (existsSync(video)) throw errWithCode(`Output already exists: ${video}`, 'output-exists')
+    }
+    const self = this
+    return this.jobs.submit(
+      this.jobInput(meta, 'ball', params as unknown as Record<string, unknown>, device, [], 'rust', 'ball'),
+      async (ctx) => {
+        await ensureOutputDir(outputDir)
+        const config = buildBallConfig(params, settings, source, outputDir, deviceKind, this.deviceIndex(device) ?? undefined)
+        ctx.log(
+          `ball: ${basename(source)} fps=${config.fps ?? 'source'} threshold=${config.threshold} ` +
+            `annotate=${config.annotate} device=${deviceKind}`,
+        )
+        ctx.phase('tracking', 'ball')
+        const worker = await self.ensureBallWorker(this.deviceIndex(device) ?? undefined, settings)
+        const result = await worker.run(config, ctx)
+        ctx.log(
+          `ball: ${result.detected}/${result.frames} кадров с мячом, device=${result.device}, ` +
+            `model=${result.model.width}x${result.model.height} frames=${result.model.frames}`,
+        )
+        for (const path of [result.jsonl, result.csv, result.video].filter((value): value is string => Boolean(value))) {
+          const info = await stat(path).catch(() => null)
+          if (info?.isFile()) ctx.output({ path, bytes: info.size, durationSec: null })
+        }
+      },
+    )
+  }
+
+  private async ensureBallWorker(deviceIndex: number | undefined, settings = this.settingsStore.get()): Promise<RustBallWorker> {
+    if (this.ballWorker) return this.ballWorker
+    const worker = new RustBallWorker(settings, deviceIndex, (message) => this.logger.warn(message))
+    await worker.start()
+    this.ballWorker = worker
+    return worker
   }
 
   private async ensureUpscaleWorker(deviceIndex: number | undefined, settings = this.settingsStore.get()): Promise<RustUpscaleWorker> {

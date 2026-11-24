@@ -6,6 +6,7 @@ import { probeFfmpeg } from './ffmpeg.js'
 import { run } from './proc.js'
 import { gpuEnv } from './settings.js'
 import { upscaleAvailable } from './upscale-rust.js'
+import { ballAvailable } from './ball-rust.js'
 
 export interface DoctorDeps {
   settings: () => Settings
@@ -209,6 +210,24 @@ export class Doctor {
       fix: 'Put 4x-UltraSharp.onnx on disk and set upscaleModelPath (or GPUTOOL_UPSCALE_MODEL).',
       group: 'onnx',
     })
+    const ball = ballAvailable(settings)
+    checks.push({
+      id: 'ball-worker',
+      title: 'Ball tracking worker',
+      level: existsSync(ball.binary) ? 'ok' : 'fail',
+      detail: existsSync(ball.binary) ? ball.binary : `missing: ${ball.binary} (npm run build:rust)`,
+      fix: 'Build the Rust workers with npm run build:rust.',
+      group: 'ffmpeg',
+    })
+    checks.push({
+      id: 'ball-model',
+      title: 'Ball model (ONNX)',
+      level: existsSync(ball.model) ? 'ok' : 'warn',
+      detail: existsSync(ball.model) ? ball.model : `not found: ${ball.model} (set Settings → ballModelPath)`,
+      fix: 'Export TrackNetV2/V3 or WASB to ONNX and set ballModelPath (or GPUTOOL_BALL_MODEL).',
+      group: 'onnx',
+    })
+
     if (upscale.ok) {
       const probe = await this.upscaleProbe(settings)
       checks.push({

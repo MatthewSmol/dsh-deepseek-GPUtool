@@ -128,6 +128,25 @@ npm test
 - Тесты: +5 (разбор ответа, multipart на локальный сервер, отсутствие ключа в
   тексте ошибки, лимиты файла) — всего 17.
 
+### 1.5.0 — 2026-11-24
+
+- **Трекинг мяча настольного тенниса** (`mcp__gputool__ball`): ONNX-модели
+  TrackNetV2/V3 и WASB (3 кадра → heatmap) через новый Rust-воркер
+  `bin/gputool-ball`; CUDA при наличии, иначе честный CPU-фолбэк для `auto`.
+- Пайплайн: ffmpeg → кольцевой буфер кадров → билинейный ресайз 512×288 →
+  тензор `[1, frames*3, H, W]` → heatmap → субпиксельный центр (argmax + центроид),
+  отбрасывание телепортов, заполнение пропусков до `maxGapFrames`, медианное
+  сглаживание.
+- Выход: `ball.jsonl` (frame/time/visible/x/y/conf), `ball.csv`, `ball.ass` и
+  видео с точкой (`subtitles`-фильтр + NVENC, аудио copy).
+- Настройки: `ballModelPath`, `ballThreshold`, `ballMaxGapFrames`,
+  `ballAnnotate`, `ballDevice`; поля в панели, проверки в doctor
+  (`ball-worker`, `ball-model`).
+- Модель не коммитится: в README — экспорт в ONNX
+  (`opset 18`, `[1,9,288,512]`) для TrackNetV2/V3 и WASB.
+- Тесты: +3 Rust (heatmap/постобработка/ASS) и +3 Node (валидация) — 37 Node,
+  8 Rust.
+
 ### 1.4.0 — 2026-11-24
 
 - **GPU-апскейл 4x-UltraSharp** (`mcp__gputool__upscale`): отдельный Rust-воркер
@@ -211,6 +230,34 @@ npm test
   различие — округление билинейной интерполяции, лица находятся те же.
 - Тесты: +2 Node (доступность бинаря и поиск `libonnxruntime.so`) и 3 Rust
   (`nms`, `similarity`, `cosine`).
+
+## Трекинг мяча (TrackNet / WASB, ONNX)
+
+```json
+{
+  "source": "/video/match.mp4",
+  "model": "/models/ball/tracknetv2.onnx",
+  "fps": 30, "threshold": 0.5, "annotate": true,
+  "outputDir": "/out/ball"
+}
+```
+
+Инструмент рассчитан на ONNX-модели семейства TrackNetV2/V3 и WASB-SBDT:
+`[1, frames*3, H, W]` (обычно 1×9×288×512) → heatmap `[1, 1, H, W]`. Экспорт из
+PyTorch (opset 18; ORT 1.32 его понимает):
+
+```python
+torch.onnx.export(model, torch.zeros(1, 9, 288, 512), "tracknetv2.onnx",
+                  opset_version=18, input_names=["input"], output_names=["output"])
+```
+
+Веса: [TrackNetV2 (PyTorch)](https://github.com/yastrebksv/TrackNet),
+[TrackNetV3](https://github.com/qaz812345/TrackNetV3) (нужна ветка TrackNet),
+[WASB-SBDT](https://github.com/nttcom/WASB-SBDT) (теннисные веса MIT). Модель
+подключается путём `ballModelPath` или `GPUTOOL_BALL_MODEL`, в git не входит.
+
+Выход: `ball.jsonl` + `ball.csv` (frame/time/visible/x/y/conf), `ball.ass` и
+`ball.mp4` с точкой; `annotate:false` — только координаты.
 
 ## Апскейл 4x-UltraSharp (только GPU)
 

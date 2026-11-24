@@ -110,6 +110,9 @@ export interface SettingsView {
   upscaleModelPath?: string
   upscaleTile?: number
   upscaleOverlap?: number
+  ballModelPath?: string
+  ballThreshold?: number
+  ballMaxGapFrames?: number
   deepseekBaseUrl?: string
   deepseekApiKeyEnv?: string
   outputRoot: string
@@ -576,6 +579,9 @@ export function createPanel(ui: Ui): (props: any) => any {
           field('upscaleModelPath', tr('settings.upscaleModel')),
           field('upscaleTile', tr('settings.upscaleTile'), true),
           field('upscaleOverlap', tr('settings.upscaleOverlap'), true),
+          field('ballModelPath', tr('settings.ballModel')),
+          field('ballThreshold', tr('settings.ballThreshold'), true),
+          field('ballMaxGapFrames', tr('settings.ballMaxGap'), true),
           field('outputRoot', tr('settings.outputRoot')),
           field('torchIndexUrl', tr('settings.torchIndex')),
           field('gpuConcurrency', tr('settings.gpuConcurrency'), true),

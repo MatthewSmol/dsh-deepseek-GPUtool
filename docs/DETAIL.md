@@ -97,6 +97,16 @@ Umeyama — на Rust. Движок держит воркер между зад�
 Rust тёплый — 3,14 с, Rust холодный — 4,28 с. Без эталона Rust — 11,2 мс/кадр.
 Боксы совпадают с Python на 83 % при IoU ≥ 0,5.
 
+## Трекинг мяча (TrackNet/WASB)
+
+`rust/ball-worker` → `bin/gputool-ball`: постоянный процесс (`--serve`) и
+`--config`. Модель — ONNX `[1, frames*3, H, W]` (auto-определение числа кадров
+пробой 3/1 и размера из параметров, по умолчанию 512×288), output — heatmap.
+CUDA EP при наличии; `device:"auto"` допускает CPU с предупреждением.
+Постобработка: argmax + центроид 5×5, порог, отбрасывание телепортов, линейное
+заполнение пропусков ≤ `maxGapFrames`, медиана окном 3. Выход: `ball.jsonl`,
+`ball.csv`, `ball.ass`, `ball.mp4` (subtitles + NVENC, аудио copy).
+
 ## GPU-апскейл 4x-UltraSharp
 
 `rust/upscale-worker` → `bin/gputool-upscale`: постоянный процесс, сессия ORT

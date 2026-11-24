@@ -126,6 +126,24 @@ call history.
 - Tests: +5 (response parsing, multipart against a local server, the key never
   echoed, file limits) for 17 total.
 
+### 1.5.0 — 2026-11-24
+
+- **Table tennis ball tracking** (`mcp__gputool__ball`): ONNX TrackNetV2/V3 and
+  WASB models (3 frames → heatmap) through the new Rust worker
+  `bin/gputool-ball`; CUDA when available, otherwise an honest CPU fallback for
+  `auto`.
+- Pipeline: ffmpeg → frame ring buffer → bilinear resize 512×288 → tensor
+  `[1, frames*3, H, W]` → heatmap → subpixel center (argmax + centroid), jump
+  rejection, gap filling up to `maxGapFrames`, median smoothing.
+- Outputs: `ball.jsonl` (frame/time/visible/x/y/conf), `ball.csv`, `ball.ass` and
+  a video with the dot burned in (`subtitles` filter + NVENC, audio copied).
+- Settings: `ballModelPath`, `ballThreshold`, `ballMaxGapFrames`, `ballAnnotate`,
+  `ballDevice`; panel fields and doctor checks (`ball-worker`, `ball-model`).
+- The model is not committed: README documents the ONNX export (`opset 18`,
+  `[1,9,288,512]`) for TrackNetV2/V3 and WASB.
+- Tests: +3 Rust (heatmap/postprocess/ASS) and +3 Node (validation) — 37 Node,
+  8 Rust total.
+
 ### 1.4.0 — 2026-11-24
 
 - **GPU 4x-UltraSharp upscaling** (`mcp__gputool__upscale`): a separate Rust worker
@@ -214,6 +232,24 @@ call history.
   difference is bilinear interpolation rounding, the same faces are found.
 - Tests: +2 Node (binary availability, `libonnxruntime.so` lookup) and 3 Rust
   (`nms`, `similarity`, `cosine`).
+
+## Ball tracking (TrackNet / WASB, ONNX)
+
+```json
+{
+  "source": "/video/match.mp4",
+  "model": "/models/ball/tracknetv2.onnx",
+  "fps": 30, "threshold": 0.5, "annotate": true,
+  "outputDir": "/out/ball"
+}
+```
+
+The tool targets ONNX models from the TrackNetV2/V3 and WASB-SBDT families:
+`[1, frames*3, H, W]` (usually 1×9×288×512) → heatmap `[1, 1, H, W]`. Export from PyTorch (opset 18; ORT 1.32 supports it) as shown above. Weights:
+[TrackNetV2](https://github.com/yastrebksv/TrackNet),
+[TrackNetV3](https://github.com/qaz812345/TrackNetV3) (TrackNet branch),
+[WASB-SBDT](https://github.com/nttcom/WASB-SBDT). Point `ballModelPath` or
+`GPUTOOL_BALL_MODEL` at the exported file.
 
 ## 4x-UltraSharp upscale (GPU only)
 

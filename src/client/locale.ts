@@ -3,6 +3,9 @@
 export type Dict = Record<string, string>
 
 export const en: Dict = {
+  'settings.ballModel': 'Ball: ONNX model (TrackNet/WASB)',
+  'settings.ballThreshold': 'Ball: visibility threshold (0–1)',
+  'settings.ballMaxGap': 'Ball: max consecutive gaps',
   'settings.upscaleModel': '4x-UltraSharp model path (.onnx)',
   'settings.upscaleTile': 'Upscale tile (64–512)',
   'settings.upscaleOverlap': 'Upscale tile overlap',
@@ -123,6 +126,9 @@ export const en: Dict = {
 }
 
 export const ru: Dict = {
+  'settings.ballModel': 'Мяч: ONNX-модель (TrackNet/WASB)',
+  'settings.ballThreshold': 'Мяч: порог видимости (0–1)',
+  'settings.ballMaxGap': 'Мяч: максимум пропусков подряд',
   'settings.upscaleModel': '4x-UltraSharp: путь к модели (.onnx)',
   'settings.upscaleTile': 'Апскейл: тайл (64–512)',
   'settings.upscaleOverlap': 'Апскейл: перекрытие тайлов',

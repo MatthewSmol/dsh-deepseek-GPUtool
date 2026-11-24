@@ -41,6 +41,12 @@ export interface Settings {
   /** Кодек/качество видео-апскейла (NVENC). */
   upscaleCodec: 'hevc' | 'h264'
   upscaleQuality: 'fast' | 'balanced' | 'quality'
+  /** Модель трекинга мяча (ONNX TrackNet/WASB). */
+  ballModelPath: string
+  ballThreshold: number
+  ballMaxGapFrames: number
+  ballAnnotate: boolean
+  ballDevice: 'auto' | 'cuda' | 'cpu'
   outputRoot: string
   torchIndexUrl: string
   gpuConcurrency: number
@@ -112,7 +118,7 @@ export interface FfmpegCaps {
   hwaccels: string[]
 }
 
-export type JobKind = 'ffmpeg' | 'yolo' | 'onnx' | 'face' | 'ocr' | 'python' | 'setup' | 'upscale'
+export type JobKind = 'ffmpeg' | 'yolo' | 'onnx' | 'face' | 'ocr' | 'python' | 'setup' | 'upscale' | 'ball'
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
 
 export interface JobProgress {

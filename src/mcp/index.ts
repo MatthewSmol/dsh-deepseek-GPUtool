@@ -383,6 +383,38 @@ mcp.registerTool(
 )
 
 mcp.registerTool(
+  'ball',
+  {
+    title: 'Table tennis ball tracking',
+    description:
+      'Track a table tennis ball with an ONNX TrackNetV2/V3 or WASB model: video frames are decoded, ' +
+      'stacked into frames*3 channels, run through ONNX Runtime (CUDA when available, CPU fallback for auto), ' +
+      'and a heatmap is turned into subpixel coordinates with gap filling and smoothing. ' +
+      'Writes ball.jsonl/ball.csv and (annotate=true) a video with a burned-in dot via ASS + NVENC.',
+    inputSchema: z.object({
+      source: z.string(),
+      model: z.string().optional(),
+      outputDir: z.string().optional(),
+      fps: z.number().optional(),
+      startSec: z.number().optional(),
+      durationSec: z.number().optional(),
+      threshold: z.number().optional(),
+      annotate: z.boolean().optional(),
+      maxGapFrames: z.number().optional(),
+      smooth: z.boolean().optional(),
+      predictOffset: z.number().optional(),
+      frames: z.number().optional(),
+      inputWidth: z.number().optional(),
+      inputHeight: z.number().optional(),
+      overwrite: z.boolean().optional(),
+      device: deviceSchema.optional(),
+      label: z.string().optional(),
+    }),
+  },
+  async (args) => await call('ball', args as Record<string, unknown>, async () => engine.submitBall(args as never, meta('ball', args as Record<string, unknown>))),
+)
+
+mcp.registerTool(
   'ocr',
   {
     title: 'OCR (DeepSeek first, local PP-OCRv5 fallback)',
