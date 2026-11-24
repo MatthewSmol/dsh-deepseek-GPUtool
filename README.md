@@ -3,22 +3,30 @@
 [English](README.en.md) | Русский
 
 DSH-плагин и локальный MCP-сервис для общей GPU-работы: ffmpeg NVDEC/NVENC,
-ONNX Runtime CUDA (YuNet/SFace), OCR (DeepSeek → PP-OCRv5), YOLO11 и GPU-скрипты. У каждой задачи
-есть живой прогресс (процент, ETA, fps), а история вызовов хранит, какая сессия её
-запустила и сколько времени это заняло.
+ONNX Runtime CUDA (YuNet/SFace, BlurBall, SPAN x2), OCR (DeepSeek → PP-OCRv5),
+YOLO11, трекинг мяча и GPU-скрипты. У каждой задачи есть живой прогресс
+(процент, ETA, fps), а история вызовов хранит, какая сессия её запустила и
+сколько времени это заняло.
 
-- MCP-инструменты: `mcp__gputool__{status,probe,ffmpeg,yolo,onnx,face,ocr,python,jobs,job,cancel,history,gpu,setup,settings}`
+- MCP-инструменты: `mcp__gputool__{status,probe,ffmpeg,yolo,onnx,face,ocr,ball,upscale,python,jobs,job,cancel,history,gpu,setup,settings}`
 - Панель: левый сайдбар → GPU tool (Обзор / Задачи / История / Аренда / Настройки)
 - Язык интерфейса: **русский по умолчанию**, английский — переключателем RU / EN в шапке панели
 - HTTP API: `/gputool/api/*` (loopback, защищён токеном)
+- Апскейл **x2 (SPAN fp16)** строго на CUDA: батчи, NVDEC/NVENC, без тайлинга и без CPU-фолбэка
+- Трекинг мяча настольного тенниса: **BlurBall** (ONNX, CUDA) → координаты и видео с точкой
+- Модели на диске: `$DSH_HOME/gputool/models/ball/blurball_tt.onnx` (мяч) и
+  `$DSH_HOME/gputool/models/upscale/span2x_ch48_fp16.onnx` (апскейл x2); путь
+  меняется в настройках (`ballModelPath`, `upscaleModelPath`)
 - Установка окружения: `mcp__gputool__setup` → `install-runtime` (torch CUDA, onnxruntime-gpu, ultralytics, lap)
 
 Подробности — в [docs/DETAIL.md](docs/DETAIL.md).
 
 ```bash
 npm install --cache ./.npm-cache
-npm run build
-npm test
+npm run build        # TypeScript + клиентский бандл
+npm run build:rust   # воркеры face / upscale / ball (cargo)
+npm test             # Node-тесты
+npm run test:rust    # Rust-тесты воркеров
 ```
 
 Затем установите каталог через менеджер плагинов DSH.

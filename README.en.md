@@ -3,22 +3,30 @@
 English | [Русский](README.md)
 
 A DSH plugin and local MCP service for shared GPU work: ffmpeg NVDEC/NVENC,
-ONNX Runtime CUDA (YuNet/SFace), OCR (DeepSeek → PP-OCRv5), YOLO11 and GPU scripts. Every job has
-live progress (percent, ETA, fps), and the call history records which session
-started it and how long it took.
+ONNX Runtime CUDA (YuNet/SFace, BlurBall, SPAN x2), OCR (DeepSeek → PP-OCRv5),
+YOLO11, ball tracking and GPU scripts. Every job has live progress (percent,
+ETA, fps), and the call history records which session started it and how long
+it took.
 
-- MCP tools: `mcp__gputool__{status,probe,ffmpeg,yolo,onnx,face,ocr,python,jobs,job,cancel,history,gpu,setup,settings}`
+- MCP tools: `mcp__gputool__{status,probe,ffmpeg,yolo,onnx,face,ocr,ball,upscale,python,jobs,job,cancel,history,gpu,setup,settings}`
 - Panel: left sidebar → GPU tool (Overview / Jobs / History / Leases / Settings)
 - Interface language: **Russian by default**, English via the RU / EN switch in the panel header
 - HTTP API: `/gputool/api/*` (loopback, token protected)
+- **x2 upscaling (SPAN fp16)** strictly on CUDA: batching, NVDEC/NVENC, no tiling, no CPU fallback
+- Table tennis ball tracking: **BlurBall** (ONNX, CUDA) → coordinates and a video with the dot
+- On-disk models: `$DSH_HOME/gputool/models/ball/blurball_tt.onnx` (ball) and
+  `$DSH_HOME/gputool/models/upscale/span2x_ch48_fp16.onnx` (x2 upscale); override
+  via `ballModelPath` / `upscaleModelPath`
 - Runtime setup: `mcp__gputool__setup` → `install-runtime` (torch CUDA, onnxruntime-gpu, ultralytics, lap)
 
 Details: [docs/DETAIL.md](docs/DETAIL.md).
 
 ```bash
 npm install --cache ./.npm-cache
-npm run build
-npm test
+npm run build        # TypeScript + client bundle
+npm run build:rust   # face / upscale / ball workers (cargo)
+npm test             # Node tests
+npm run test:rust    # worker tests
 ```
 
 Then install the directory with the DSH plugin manager.
