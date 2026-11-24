@@ -108,8 +108,7 @@ export interface SettingsView {
   ocrEngine?: 'auto' | 'deepseek' | 'local'
   faceWorker?: 'auto' | 'rust' | 'python'
   upscaleModelPath?: string
-  upscaleTile?: number
-  upscaleOverlap?: number
+  upscaleBatch?: number
   ballModelPath?: string
   ballThreshold?: number
   ballMaxGapFrames?: number
@@ -577,8 +576,7 @@ export function createPanel(ui: Ui): (props: any) => any {
           field('deepseekBaseUrl', tr('settings.deepseekBaseUrl')),
           field('deepseekApiKeyEnv', tr('settings.ocrKeyEnv')),
           field('upscaleModelPath', tr('settings.upscaleModel')),
-          field('upscaleTile', tr('settings.upscaleTile'), true),
-          field('upscaleOverlap', tr('settings.upscaleOverlap'), true),
+          field('upscaleBatch', tr('settings.upscaleBatch'), true),
           field('ballModelPath', tr('settings.ballModel')),
           field('ballThreshold', tr('settings.ballThreshold'), true),
           field('ballMaxGapFrames', tr('settings.ballMaxGap'), true),

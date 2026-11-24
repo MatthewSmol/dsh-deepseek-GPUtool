@@ -58,7 +58,7 @@ import {
 } from './upscale-rust.js'
 import { run, stream } from './proc.js'
 
-export const VERSION = '1.5.2'
+export const VERSION = '1.6.0'
 
 /** Метаданные личности вызывающего из MCP-инструментов или HTTP-запросов. */
 export interface SubmitMeta {
@@ -141,7 +141,7 @@ export class Engine {
   /** Постоянный Rust-воркер лиц: создаётся один раз и переживает задания. */
   private faceWorker: RustFaceWorker | null = null
 
-  /** Постоянный GPU-воркер апскейла 4x-UltraSharp. */
+  /** Постоянный GPU-воркер апскейла x2 (SPAN fp16). */
   private upscaleWorker: RustUpscaleWorker | null = null
 
   /** Постоянный воркер трекинга мяча (TrackNet/WASB ONNX). */
@@ -536,7 +536,7 @@ export class Engine {
   }
 
   /**
-   * Апскейл 4x-UltraSharp на CUDA. GPU обязателен: CPU-режима нет, при
+   * Апскейл x2 (SPAN fp16) на CUDA. GPU обязателен: CPU-режима нет, при
    * недоступности CUDA задание падает с понятной ошибкой, а не считает на CPU.
    */
   async submitUpscale(params: UpscaleParams, meta: SubmitMeta): Promise<JobRecord> {
@@ -558,7 +558,7 @@ export class Engine {
     const batchDir = `upscale-${Date.now()}`
     const outputs = sources.map((source) => params.output && sources.length === 1
       ? params.output
-      : join(settings.outputRoot, batchDir, `${basename(source).replace(/\.[^.]+$/, '')}.4x.${isImageSource(source) ? 'png' : 'mp4'}`))
+      : join(settings.outputRoot, batchDir, `${basename(source).replace(/\.[^.]+$/, '')}.x2.${isImageSource(source) ? 'png' : 'mp4'}`))
     if (params.overwrite !== true) {
       for (const path of outputs) {
         if (existsSync(path)) throw errWithCode(`Output already exists: ${path}`, 'output-exists')
@@ -574,7 +574,7 @@ export class Engine {
           const output = outputs[index] as string
           await ensureParent(output)
           const config = buildUpscaleConfig(params, settings, source, output)
-          ctx.log(`upscale: ${basename(source)} tile=${config.tile} overlap=${config.overlap} model=${basename(config.model)}`)
+          ctx.log(`upscale: ${basename(source)} x2 batch=${config.batch} model=${basename(config.model)}`)
           ctx.phase('upscaling', basename(source))
           const result = await worker.run(config, ctx)
           ctx.log(

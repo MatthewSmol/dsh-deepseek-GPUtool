@@ -33,11 +33,10 @@ export interface Settings {
   faceWorker: 'auto' | 'rust' | 'python'
   /** Шрифт для титров счёта в монтаже. */
   montageFontPath: string
-  /** Модель 4x-UltraSharp для GPU-апскейла. */
+  /** Модель x2-апскейла (SPAN fp16 ONNX). */
   upscaleModelPath: string
   /** Размер тайла и перекрытие для апскейла (CUDA). */
-  upscaleTile: number
-  upscaleOverlap: number
+  upscaleBatch: number
   /** Кодек/качество видео-апскейла (NVENC). */
   upscaleCodec: 'hevc' | 'h264'
   upscaleQuality: 'fast' | 'balanced' | 'quality'

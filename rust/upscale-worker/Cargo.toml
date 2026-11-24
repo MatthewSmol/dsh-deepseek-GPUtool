@@ -1,12 +1,13 @@
 [package]
 name = "gputool-upscale"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "GPU-only воркер апскейла 4x-UltraSharp для плагина GPU tool"
+description = "GPU-only x2-апскейл (SPAN fp16, батчи, NVDEC/NVENC) для GPU tool"
 license = "MIT"
 
 [dependencies]
-ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "cuda", "api-22"] }
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "cuda", "half", "api-22"] }
+half = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"

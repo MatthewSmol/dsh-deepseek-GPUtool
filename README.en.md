@@ -126,6 +126,24 @@ call history.
 - Tests: +5 (response parsing, multipart against a local server, the key never
   echoed, file limits) for 17 total.
 
+### 1.6.0 — 2026-11-24
+
+- **Upscaling is x2-only now** (4x-UltraSharp removed): lightweight **SPAN x2
+  fp16** instead of RRDBNet, inference strictly on CUDA with no CPU fallback.
+- **fp16 + batching**: frames run in batches (`batch`, default 8), one
+  `session.run` per batch; tiling removed (`tile=0`), any tile value is an error.
+- **All weights downloaded**: SPAN archive (ch48/ch52) and Real-ESRGAN x2plus;
+  export via `scripts/export_span2x_onnx.py` → `span2x_ch48_fp16.onnx` (835 KB).
+- **fp16 quality**: PSNR vs PyTorch fp32 — **57.99 dB**, MAE 0.26 levels.
+- **Speed** on RTX 3070 (512×288→1024×576, batch 8): **32.3 fps**; inference
+  24.1 ms/frame, PNG decode 1.8 ms, PNG encode 5.0 ms.
+- **Video path**: NVDEC → CUDA batch → NVENC, 3 s 512×288→1024×576 clip in 2.8 s
+  (~27 fps), HEVC.
+- **Chunk c00**: 2000 frames in **65.7 s**; ETA for all 13 parts (25,925 frames)
+  — **~13.4 min** (old 4x: 231 ms/frame ≈ 4.3 fps ≈ 100 min).
+- Settings: `upscaleModelPath` (default `span2x_ch48_fp16.onnx`), `upscaleBatch`;
+  `upscaleTile`/`upscaleOverlap` removed; doctor checks the fp16 session and x2.
+
 ### 1.5.2 — 2026-11-24
 
 - **BlurBall is now the primary ball detector** (table tennis, MIT): weights live
@@ -312,20 +330,38 @@ The tool targets ONNX models from the TrackNetV2/V3 and WASB-SBDT families:
 [WASB-SBDT](https://github.com/nttcom/WASB-SBDT). Point `ballModelPath` or
 `GPUTOOL_BALL_MODEL` at the exported file.
 
-## 4x-UltraSharp upscale (GPU only)
+## x2 upscale (SPAN, GPU only)
 
 ```json
 {
-  "sources": ["/in/frame.png"],
-  "output": "/out/frame.4x.png",
-  "model": "/models/upscale/4x-UltraSharp.onnx",
-  "tile": 256, "overlap": 16
+  "source": "/video/clip.mp4",
+  "output": "/out/clip.x2.mp4",
+  "batch": 8,
+  "codec": "hevc", "quality": "balanced"
 }
 ```
 
-Video uses the same tool with a single `source`; there is no CPU mode: without a
-usable CUDA EP the job fails instead of running on CPU. The model is shipped
-separately (67 MB); set `upscaleModelPath` or `GPUTOOL_UPSCALE_MODEL`.
+- Model — **SPAN x2 fp16** (`span2x_ch48_fp16.onnx`, 835 KB); inference strictly
+  on CUDA (`disable_cpu_ep_fallback`); without CUDA the job fails with
+  `cuda-unavailable` — there is no CPU mode.
+- Frames are **batched** (`batch`, 1–64, default 8); no tiling (`tile=0`, any
+  tile value fails with `tiling-not-supported`).
+- Video: NVDEC → CUDA batch → NVENC (`hevc_nvenc`/`h264_nvenc`), audio copied.
+  PNG directories work too (PNG decode/encode is CPU, reported separately).
+- Speed on RTX 3070, 512×288→1024×576, batch 8: **32.3 fps** (24.1 ms/frame
+  inference); 2000 frames in 61.8 s; 25,925 frames (13 chunks) ~13.4 min.
+
+Export from the official SPAN weights (Apache-2.0):
+
+```bash
+git clone --depth 1 https://github.com/hongyuanyu/SPAN ~/.cache/gputool/SPAN
+python scripts/export_span2x_onnx.py --repo ~/.cache/gputool/SPAN \
+  --weights ~/.cache/gputool/span/ckpt/spanx2_ch48.pth \
+  --output ~/.dsh/gputool/models/upscale/span2x_ch48_fp16.onnx
+```
+
+Set `upscaleModelPath` or `GPUTOOL_UPSCALE_MODEL`. The old 4x path is gone.
+
 
 ## Raw ffmpeg arguments
 

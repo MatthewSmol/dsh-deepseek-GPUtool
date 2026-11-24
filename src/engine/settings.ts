@@ -42,8 +42,7 @@ export function defaultSettings(): Settings {
       ? '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
       : '',
     upscaleModelPath: process.env.GPUTOOL_UPSCALE_MODEL ?? '',
-    upscaleTile: 256,
-    upscaleOverlap: 16,
+    upscaleBatch: 8,
     upscaleCodec: 'hevc',
     upscaleQuality: 'balanced',
     ballModelPath: process.env.GPUTOOL_BALL_MODEL ?? '',

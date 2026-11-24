@@ -356,19 +356,18 @@ mcp.registerTool(
 mcp.registerTool(
   'upscale',
   {
-    title: 'Upscale 4x on CUDA',
+    title: 'Upscale x2 on CUDA (SPAN fp16)',
     description:
-      'Upscale images or video with 4x-UltraSharp strictly on CUDA (ONNX Runtime, no CPU fallback). ' +
-      'Images are tiled with overlap and feathered; video is decoded with NVDEC, upscaled frame by frame ' +
-      'and encoded with NVENC (audio is copied). GPU is required: without a usable CUDA EP the job fails ' +
-      'with cuda-ep-unavailable/gpu-unsupported instead of running on CPU.',
+      'Upscale images or video exactly x2 with a lightweight SPAN fp16 model strictly on CUDA ' +
+      '(ONNX Runtime, no CPU fallback). Frames are batched (batch), there is no tiling; video is decoded ' +
+      'with NVDEC and encoded with NVENC (audio is copied). GPU is required: without CUDA the job fails ' +
+      'with cuda-unavailable instead of running on CPU.',
     inputSchema: z.object({
       source: z.string().optional(),
       sources: z.array(z.string()).optional(),
       output: z.string().optional(),
       model: z.string().optional(),
-      tile: z.number().optional(),
-      overlap: z.number().optional(),
+      batch: z.number().optional(),
       codec: z.enum(['hevc', 'h264']).optional(),
       quality: z.enum(['fast', 'balanced', 'quality']).optional(),
       startSec: z.number().optional(),

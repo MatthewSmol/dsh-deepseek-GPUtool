@@ -196,7 +196,7 @@ export class Doctor {
     const upscale = upscaleAvailable(settings)
     checks.push({
       id: 'upscale-worker',
-      title: '4x-UltraSharp worker',
+      title: 'x2 upscale worker (SPAN fp16)',
       level: existsSync(upscale.binary) ? 'ok' : 'fail',
       detail: existsSync(upscale.binary) ? upscale.binary : `missing: ${upscale.binary} (npm run build:rust)`,
       fix: 'Build the Rust worker with npm run build:rust.',
@@ -204,10 +204,10 @@ export class Doctor {
     })
     checks.push({
       id: 'upscale-model',
-      title: '4x-UltraSharp model',
+      title: 'x2 upscale model (SPAN fp16)',
       level: existsSync(upscale.model) ? 'ok' : 'warn',
       detail: existsSync(upscale.model) ? upscale.model : `not found: ${upscale.model} (set Settings → upscaleModelPath)`,
-      fix: 'Put 4x-UltraSharp.onnx on disk and set upscaleModelPath (or GPUTOOL_UPSCALE_MODEL).',
+      fix: 'Export span2x_ch48_fp16.onnx and set upscaleModelPath (or GPUTOOL_UPSCALE_MODEL).',
       group: 'onnx',
     })
     const ball = ballAvailable(settings)
@@ -232,7 +232,7 @@ export class Doctor {
       const probe = await this.upscaleProbe(settings)
       checks.push({
         id: 'upscale-cuda',
-        title: '4x-UltraSharp on CUDA',
+        title: 'SPAN x2 fp16 on CUDA',
         level: probe.ok ? 'ok' : 'fail',
         detail: probe.detail,
         fix: probe.ok ? undefined : 'The model must fit entirely on CUDA: check the ORT error, driver and CUDA EP build.',
@@ -409,7 +409,7 @@ export class Doctor {
     }
     const child = await run(
       availability.binary,
-      ['--probe', '--model', availability.model, '--tile', String(settings.upscaleTile || 256)],
+      ['--probe', availability.model],
       {
         timeoutMs: 240_000,
         env: { ...gpuEnv(settings, undefined), ORT_DYLIB_PATH: availability.library },
@@ -421,10 +421,10 @@ export class Doctor {
     let ok = false
     if (line) {
       try {
-        const parsed = JSON.parse(line) as { ok?: boolean; factor?: number; inferMs?: number; loadMs?: number }
-        ok = parsed.ok === true
+        const parsed = JSON.parse(line) as { type?: string; scale?: number; precision?: string; loadMs?: number; msPerFrame64?: number }
+        ok = parsed.type === 'probe' && parsed.scale === 2
         detail = ok
-          ? `CUDA ok: ${parsed.factor ?? 4}x, tile load ${parsed.loadMs ?? '?'} ms, infer ${parsed.inferMs ?? '?'} ms`
+          ? `CUDA ok: x${parsed.scale} ${parsed.precision}, load ${parsed.loadMs ?? '?'} ms, infer ${parsed.msPerFrame64 ?? '?'} ms (64x64)`
           : `CUDA probe failed: ${line.slice(0, 300)}`
       } catch {
         detail = `CUDA probe returned non-JSON: ${line.slice(0, 200)}`

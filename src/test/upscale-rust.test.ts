@@ -1,5 +1,5 @@
 /**
- * GPU-апскейл 4x-UltraSharp: проверки доступности и валидации конфига.
+ * GPU-апскейл x2 (SPAN fp16): доступность и валидация конфига.
  * Инференс здесь не запускается — только CPU-логика, GPU проверяется e2e.
  */
 import assert from 'node:assert/strict'
@@ -18,7 +18,7 @@ import { defaultSettings } from '../engine/settings.js'
 function fixture(): { dir: string; source: string; model: string } {
   const dir = mkdtempSync(join(tmpdir(), 'gputool-upscale-'))
   const source = join(dir, 'frame.png')
-  const model = join(dir, '4x-UltraSharp.onnx')
+  const model = join(dir, 'span2x_ch48_fp16.onnx')
   writeFileSync(source, 'not-a-real-png')
   writeFileSync(model, 'not-a-real-onnx')
   return { dir, source, model }
@@ -33,7 +33,7 @@ test('image and video sources are detected by extension', () => {
 
 test('upscale model path falls back to modelsDir/upscale', () => {
   const settings = { ...defaultSettings(), upscaleModelPath: '' }
-  assert.equal(upscaleModelPath(settings), join(settings.modelsDir, 'upscale', '4x-UltraSharp.onnx'))
+  assert.equal(upscaleModelPath(settings), join(settings.modelsDir, 'upscale', 'span2x_ch48_fp16.onnx'))
   assert.equal(upscaleModelPath(settings, '/models/custom.onnx'), '/models/custom.onnx')
   const explicit = { ...settings, upscaleModelPath: '/models/preset.onnx' }
   assert.equal(upscaleModelPath(explicit), '/models/preset.onnx')
@@ -53,12 +53,12 @@ test('availability names the missing piece instead of guessing', () => {
   }
 })
 
-test('config validation rejects tile/overlap outside the allowed range', () => {
+test('config validation rejects batch outside the allowed range', () => {
   const { dir, source, model } = fixture()
   try {
-    const settings = { ...defaultSettings(), upscaleModelPath: model, upscaleTile: 256, upscaleOverlap: 16 }
-    assert.throws(() => buildUpscaleConfig({ tile: 32 }, settings, source, join(dir, 'out.png')), /tile must be between 64 and 512/)
-    assert.throws(() => buildUpscaleConfig({ tile: 256, overlap: 80 }, settings, source, join(dir, 'out.png')), /overlap must be between 0 and 64/)
+    const settings = { ...defaultSettings(), upscaleModelPath: model, upscaleBatch: 8 }
+    assert.throws(() => buildUpscaleConfig({ batch: 0 }, settings, source, join(dir, 'out.png')), /batch must be between 1 and 64/)
+    assert.throws(() => buildUpscaleConfig({ batch: 65 }, settings, source, join(dir, 'out.png')), /batch must be between 1 and 64/)
     assert.throws(() => buildUpscaleConfig({}, settings, join(dir, 'missing.png'), join(dir, 'out.png')), /Source not found/)
     assert.throws(() => buildUpscaleConfig({ model: join(dir, 'missing.onnx') }, settings, source, join(dir, 'out.png')), /Model not found/)
   } finally {
@@ -66,13 +66,12 @@ test('config validation rejects tile/overlap outside the allowed range', () => {
   }
 })
 
-test('valid config carries tile, overlap, codec and both ffmpeg paths', () => {
+test('valid config carries batch, codec and both ffmpeg paths', () => {
   const { dir, source, model } = fixture()
   try {
-    const settings = { ...defaultSettings(), upscaleModelPath: model, upscaleTile: 128, upscaleOverlap: 8 }
+    const settings = { ...defaultSettings(), upscaleModelPath: model, upscaleBatch: 4 }
     const config = buildUpscaleConfig({}, settings, source, join(dir, 'out.png'))
-    assert.equal(config.tile, 128)
-    assert.equal(config.overlap, 8)
+    assert.equal(config.batch, 4)
     assert.equal(config.codec, 'hevc')
     assert.equal(config.overwrite, false)
     assert.equal(config.ffmpegPath, settings.ffmpegGpuPath)

@@ -107,15 +107,16 @@ CUDA EP при наличии; `device:"auto"` допускает CPU с пре�
 заполнение пропусков ≤ `maxGapFrames`, медиана окном 3. Выход: `ball.jsonl`,
 `ball.csv`, `ball.ass`, `ball.mp4` (subtitles + NVENC, аудио copy).
 
-## GPU-апскейл 4x-UltraSharp
+## GPU-апскейл x2 (SPAN fp16)
 
-`rust/upscale-worker` → `bin/gputool-upscale`: постоянный процесс, сессия ORT
-создаётся с CUDA EP и `session.disable_cpu_ep_fallback` (CPU-фолбэка нет).
-Картинки тайлятся (256, перекрытие 16) с линейным блендингом; RGBA сохраняет
-альфу (Lanczos). Видео: NVDEC → кадры → CUDA-инференс → NVENC, аудио copy.
-Замер (RTX 3060 Ti): 128² — 84 мс, 256² — 297 мс, 512² — 1242 мс; загрузка
-модели ~2,9 с кэшируется процессом. Ошибки: `cuda-ep-unavailable`,
-`gpu-unsupported`, `upscale-model-missing`, `upscale-factor-unsupported`.
+`rust/upscale-worker` → `bin/gputool-upscale`: ORT CUDA + `disable_cpu_ep_fallback`,
+вход/выход строго float16, фактор проверяется как ровно x2. Батч кадров
+(`batch`, 1–64), тайлинга нет. Видео: NVDEC → батч → NVENC, аудио copy; папки
+PNG декодируются/энкодируются через `image` (CPU) с раздельными метриками.
+При OOM/ошибке CUDA задание падает (`cuda-unavailable`), CPU-фолбэка нет.
+Экспорт модели — `scripts/export_span2x_onnx.py` (SPAN ch48/ch52, dynamic axes,
+opset 18, fp16).
+
 
 ## Монтаж одним прогоном
 

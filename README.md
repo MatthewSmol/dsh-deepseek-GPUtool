@@ -128,6 +128,24 @@ npm test
 - Тесты: +5 (разбор ответа, multipart на локальный сервер, отсутствие ключа в
   тексте ошибки, лимиты файла) — всего 17.
 
+### 1.6.0 — 2026-11-24
+
+- **Апскейл теперь только x2** (4x-UltraSharp удалён): лёгкая **SPAN x2 fp16**
+  вместо RRDBNet, инференс строго на CUDA без CPU-фолбэка.
+- **fp16 + батчи**: кадры идут пакетами (`batch`, по умолчанию 8), один
+  `session.run` на батч; тайлинг удалён (`tile=0`), при попытке тайла — ошибка.
+- **Все веса скачаны**: SPAN-архив (ch48/ch52) и Real-ESRGAN x2plus; экспорт
+  `scripts/export_span2x_onnx.py` → `span2x_ch48_fp16.onnx` (835 КБ, sha256).
+- **Качество fp16**: PSNR против PyTorch fp32 — **57.99 дБ**, MAE 0.26 уровня.
+- **Скорость** на RTX 3070 (512×288→1024×576, batch 8): **32.3 fps**;
+  инференс 24.1 мс/кадр, PNG-декод 1.8 мс, PNG-энкод 5.0 мс.
+- **Видео-путь**: NVDEC → батч CUDA → NVENC, 3 с клип 512×288→1024×576 за
+  2.8 с (~27 fps), HEVC; аудио копируется при наличии.
+- **Чанк c00**: 2000 кадров за **61.8 с**; ETA на все 13 частей (25 925
+  кадров) — **~13.4 мин** (старый 4x: 231 мс/кадр ≈ 4.3 fps ≈ 100 мин).
+- Настройки: `upscaleModelPath` (дефолт `span2x_ch48_fp16.onnx`), `upscaleBatch`;
+  `upscaleTile`/`upscaleOverlap` удалены; doctor проверяет fp16-сессию и factor 2.
+
 ### 1.5.2 — 2026-11-24
 
 - **BlurBall как основная модель детекции мяча** (настольный теннис, MIT):
@@ -333,21 +351,43 @@ sigmoid и нормализацию (`normalize: auto`, срабатывает �
 Выход: `ball.jsonl` + `ball.csv` (frame/time/visible/x/y/conf), `ball.ass` и
 `ball.mp4` с точкой; `annotate:false` — только координаты.
 
-## Апскейл 4x-UltraSharp (только GPU)
+## Апскейл x2 (SPAN, только GPU)
 
 ```json
 {
-  "sources": ["/in/frame.png"],
-  "output": "/out/frame.4x.png",
-  "model": "/models/upscale/4x-UltraSharp.onnx",
-  "tile": 256, "overlap": 16,
-  "label": "4x постер"
+  "source": "/video/clip.mp4",
+  "output": "/out/clip.x2.mp4",
+  "batch": 8,
+  "codec": "hevc", "quality": "balanced",
+  "label": "x2 на GPU"
 }
 ```
 
-Видео — тот же инструмент с одним `source`: `{"source":"clip.mp4","output":"clip.4x.mp4","codec":"hevc","quality":"balanced"}`.
-CPU-режима нет: при недоступной CUDA задание падает, а не считает на процессоре.
-Модель поставляется отдельно (67 МБ), путь задаётся `upscaleModelPath` или `GPUTOOL_UPSCALE_MODEL`.
+- Модель — **SPAN x2 fp16** (`span2x_ch48_fp16.onnx`, 835 КБ), инференс строго
+  на CUDA: сессия создаётся с `disable_cpu_ep_fallback`, при недоступной CUDA
+  задание падает (`cuda-unavailable`), CPU-режима нет.
+- Кадры идут **батчами** (`batch`, 1–64, по умолчанию 8), тайлинга нет
+  (`tile=0`; любой тайл — ошибка `tiling-not-supported`).
+- Видео: NVDEC-декод → батч CUDA → NVENC (`hevc_nvenc`/`h264_nvenc`), аудио
+  копируется. Папка PNG тоже поддерживается (декод/энкод PNG — CPU, это честно
+  видно в метриках `decodeMsPerFrame`/`encodeMsPerFrame`).
+- Скорость на RTX 3070, 512×288→1024×576, batch 8: **32.3 fps** (инференс
+  25 мс/кадр); 2000 кадров — 65.7 с; 25 925 кадров (13 чанков) — ~14.2 мин.
+
+Модель экспортируется из официальных весов SPAN (Apache-2.0):
+
+```bash
+# чекпойнты SPAN (архив Google Drive) -> ~/.cache/gputool/span/ckpt/spanx2_ch48.pth
+git clone --depth 1 https://github.com/hongyuanyu/SPAN ~/.cache/gputool/SPAN
+python scripts/export_span2x_onnx.py \
+  --repo ~/.cache/gputool/SPAN \
+  --weights ~/.cache/gputool/span/ckpt/spanx2_ch48.pth \
+  --output ~/.dsh/gputool/models/upscale/span2x_ch48_fp16.onnx
+```
+
+Путь задаётся `upscaleModelPath` или `GPUTOOL_UPSCALE_MODEL`. Старый
+4x-путь удалён: `/upscale` теперь всегда x2.
+
 
 ## Сырые аргументы ffmpeg
 

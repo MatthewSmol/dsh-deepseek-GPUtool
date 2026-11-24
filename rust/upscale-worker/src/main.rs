@@ -1,18 +1,20 @@
-//! GPU-only воркер апскейла 4x-UltraSharp.
+//! GPU-only x2-апскейл: SPAN fp16, батч кадров, без тайлинга.
 //!
-//! Инференс строго на CUDA: сессия создаётся с `session.disable_cpu_ep_fallback`,
-//! поэтому ORT откажется коммитить граф, если хоть один узел не ляжет на GPU.
-//! Картинки тайлятся с перекрытием и блендингом; видео идёт через ffmpeg-пайпы
-//! (декод NVDEC → кадры → CUDA-инференс → NVENC), аудио копируется без перекодирования.
+//! Инференс строго на CUDA (`disable_cpu_ep_fallback`), модель обязана быть
+//! fp16 и давать ровно x2. Видео: NVDEC-декод → батч → NVENC-энкод (аудио copy).
+//! Папка PNG: декод/энкод через image (CPU неизбежен для PNG), но батч держит GPU
+//! загруженным; раздельные метрики decode/infer/encode попадают в результат.
 
-use std::fs;
-use std::io::{BufRead, Read, Write};
+use std::fs::{self, File};
+use std::io::{BufRead, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use anyhow::{anyhow, bail, Context, Result};
-use image::{DynamicImage, ImageBuffer, Rgb, Rgba};
+use half::f16;
+use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+use image::{ExtendedColorType, ImageEncoder};
 use ort::session::Session;
 use ort::value::Tensor;
 use serde::Deserialize;
@@ -27,9 +29,9 @@ struct Config {
     output: Option<String>,
     model: String,
     #[serde(default)]
-    tile: Option<u32>,
+    batch: Option<usize>,
     #[serde(default)]
-    overlap: Option<u32>,
+    tile: Option<u32>,
     #[serde(default)]
     codec: Option<String>,
     #[serde(default)]
@@ -49,12 +51,8 @@ struct Config {
 }
 
 impl Config {
-    fn tile(&self) -> u32 {
-        self.tile.unwrap_or(256).clamp(64, 512)
-    }
-    fn overlap(&self) -> u32 {
-        let tile = self.tile();
-        self.overlap.unwrap_or(16).min(tile / 4)
+    fn batch(&self) -> usize {
+        self.batch.unwrap_or(8).clamp(1, 64)
     }
     fn ffmpeg(&self) -> String {
         self.ffmpeg_path.clone().unwrap_or_else(|| "ffmpeg".to_string())
@@ -62,15 +60,20 @@ impl Config {
     fn ffprobe(&self) -> String {
         self.ffprobe_path.clone().unwrap_or_else(|| "ffprobe".to_string())
     }
+    fn check_tile(&self) -> Result<()> {
+        if self.tile.unwrap_or(0) > 0 {
+            bail!("tiling-not-supported: тайлинг удалён, кадр идёт целиком (tile=0)");
+        }
+        Ok(())
+    }
 }
 
 // ------------------------------------------------------------------ события JSONL
 
 fn emit(value: Value) {
-    let line = value.to_string();
     let stdout = std::io::stdout();
     let mut lock = stdout.lock();
-    let _ = writeln!(lock, "{line}");
+    let _ = writeln!(lock, "{value}");
     let _ = lock.flush();
 }
 
@@ -78,15 +81,19 @@ fn emit_log(job: &str, message: impl AsRef<str>) {
     emit(json!({"type": "log", "id": job, "message": message.as_ref()}));
 }
 
-fn emit_progress(job: &str, frame: usize, total: Option<usize>, started: Instant, phase: &str) {
+fn emit_progress(
+    job: &str,
+    frame: usize,
+    total: Option<usize>,
+    started: Instant,
+    phase: &str,
+    fps_override: Option<f64>,
+) {
     let elapsed = started.elapsed().as_secs_f64().max(0.001);
-    let fps = frame as f64 / elapsed;
+    let fps = fps_override.unwrap_or(frame as f64 / elapsed);
     let percent = total.map(|total| (frame as f64 / total.max(1) as f64) * 100.0);
     let eta_ms = match total {
-        Some(total) if fps > 0.0 && frame > 0 => {
-            let rest = total.saturating_sub(frame) as f64;
-            Some((rest / fps * 1000.0).round() as u64)
-        }
+        Some(total) if fps > 0.0 && frame > 0 => Some(((total.saturating_sub(frame)) as f64 / fps * 1000.0).round() as u64),
         _ => None,
     };
     emit(json!({
@@ -105,285 +112,214 @@ fn emit_progress(job: &str, frame: usize, total: Option<usize>, started: Instant
 
 struct Upscaler {
     session: Session,
-    factor: u32,
 }
 
 impl Upscaler {
-    /// Загружает модель строго на CUDA. Любая попытка уйти на CPU — ошибка.
     fn load(model: &Path) -> Result<Self> {
         if !model.is_file() {
             bail!("model not found: {}", model.display());
         }
         let env = ort::init().build().context("init onnxruntime")?;
-        let builder = Session::builder(&env)?;
-        let builder = builder
+        let builder = Session::builder(&env)?
             .with_execution_providers([ort::ep::CUDA::default().with_device_id(0).build()])
-            .map_err(|error| anyhow!("CUDA EP is unavailable: {error}"))?;
+            .map_err(|error| anyhow!("cuda-unavailable: {error}"))?;
         let mut builder = builder
             .with_disable_cpu_fallback()
             .map_err(|error| anyhow!("cannot disable CPU fallback: {error}"))?;
-        let session = builder.commit_from_file(model).map_err(|error| {
-            anyhow!("GPU-only session failed (the model needs CPU ops): {error}")
+        let session = builder
+            .commit_from_file(model)
+            .map_err(|error| anyhow!("GPU-only fp16 session failed: {error}"))?;
+        let mut upscaler = Self { session };
+        let probe = vec![f16::ZERO; 3 * 64 * 64];
+        let output = upscaler.infer_raw(1, 64, 64, probe.as_slice()).map_err(|error| {
+            anyhow!("model-fp16-required: не удалось выполнить fp16-инференс ({error}); нужна ONNX-модель с float16 I/O")
         })?;
-        let mut upscaler = Self { session, factor: 4 };
-        // Проба: первый запуск инициализирует CUDA-ядра и даёт фактический масштаб.
-        let probe = vec![0.25f32; 3 * 64 * 64];
-        let output = upscaler.infer(64, &probe)?;
-        if output.len() % (64 * 64 * 3) != 0 {
-            bail!("unexpected model output size: {}", output.len());
-        }
-        // 64x64 -> out_w*out_h*3; при 4x это 3*256*256.
         let pixels = output.len() / 3;
-        let side = (pixels as f64).sqrt().round() as u32;
-        let factor = side / 64;
-        if factor < 2 || factor > 8 {
-            bail!("model scale factor {factor}x is not supported");
+        let side = (pixels as f64).sqrt().round() as usize;
+        if side == 0 || side % 64 != 0 || side / 64 != 2 {
+            bail!("unsupported-scale: ожидается ровно x2, получено {}x", side as f64 / 64.0);
         }
-        upscaler.factor = factor;
         Ok(upscaler)
     }
 
-    fn infer(&mut self, tile: u32, input: &[f32]) -> Result<Vec<f32>> {
-        let side = tile as usize;
+    fn infer_raw(&mut self, batch: usize, width: usize, height: usize, input: &[f16]) -> Result<Vec<f16>> {
         let tensor = Tensor::from_array((
-            [1usize, 3, side, side],
+            [batch, 3, height, width],
             input.to_vec().into_boxed_slice(),
         ))?;
         let outputs = self.session.run(ort::inputs![tensor])?;
         let value = &outputs[0];
-        let (_, data) = value.try_extract_tensor::<f32>()?;
+        let (_, data) = value.try_extract_tensor::<f16>()?;
         Ok(data.to_vec())
     }
-}
 
-// ------------------------------------------------------------------ тайлинг
-
-fn tile_starts(len: usize, tile: usize, stride: usize) -> Vec<usize> {
-    if len <= tile {
-        return vec![0];
-    }
-    let mut starts = Vec::new();
-    let mut start = 0usize;
-    while start + tile < len {
-        starts.push(start);
-        start += stride.max(1);
-    }
-    starts.push(len - tile);
-    starts.dedup();
-    starts
-}
-
-/// Одномерный профиль веса вдоль оси: 1 в центре, линейный спад в перекрытии.
-fn axis_weights(out_side: usize, factor: usize, overlap: usize, low: bool, high: bool) -> Vec<f32> {
-    let mut weights = vec![1f32; out_side];
-    let ramp = overlap * factor;
-    if ramp > 0 {
-        for position in 0..out_side {
-            let mut weight = 1f32;
-            if low && position < ramp {
-                weight = weight.min((position as f32 + 0.5) / ramp as f32);
-            }
-            if high {
-                let from_high = out_side - position;
-                if from_high < ramp {
-                    weight = weight.min((from_high as f32 - 0.5) / ramp as f32);
-                }
-            }
-            weights[position] = weight.clamp(0.001, 1.0);
+    /// Батч RGB-кадров (u8) → батч x2 RGB-кадров (u8).
+    fn upscale_batch(&mut self, frames: &[&[u8]], width: usize, height: usize) -> Result<Vec<Vec<u8>>> {
+        let batch = frames.len();
+        if batch == 0 {
+            return Ok(Vec::new());
         }
+        let plane = width * height;
+        // Таблица u8/255 -> f16: без делений и float-конверсий на каждый пиксель.
+        let lut: Vec<f16> = (0..=255u16).map(|value| f16::from_f32(value as f32 / 255.0)).collect();
+        let mut input = vec![f16::ZERO; batch * 3 * plane];
+        for (index, frame) in frames.iter().enumerate() {
+            if frame.len() != plane * 3 {
+                bail!("bad frame size {} (expected {})", frame.len(), plane * 3);
+            }
+            for channel in 0..3 {
+                let base = (index * 3 + channel) * plane;
+                for pixel in 0..plane {
+                    input[base + pixel] = lut[frame[pixel * 3 + channel] as usize];
+                }
+            }
+        }
+        let output = self.infer_raw(batch, width, height, input.as_slice())?;
+        let out_w = width * 2;
+        let out_h = height * 2;
+        let out_plane = out_w * out_h;
+        if output.len() != batch * 3 * out_plane {
+            bail!("unexpected model output {} values (batch={batch}, {out_w}x{out_h})", output.len());
+        }
+        let mut result = Vec::with_capacity(batch);
+        for index in 0..batch {
+            let mut frame = vec![0u8; out_plane * 3];
+            for channel in 0..3 {
+                let base = (index * 3 + channel) * out_plane;
+                for pixel in 0..out_plane {
+                    let value = output[base + pixel].to_f32().clamp(0.0, 1.0);
+                    frame[pixel * 3 + channel] = (value * 255.0).round() as u8;
+                }
+            }
+            result.push(frame);
+        }
+        Ok(result)
     }
-    weights
 }
 
-/// Апскейл RGB-кадра тайлами с перекрытием и блендингом.
-fn upscale_rgb(
-    upscaler: &mut Upscaler,
-    rgb: &[u8],
-    width: usize,
-    height: usize,
-    tile: u32,
-    overlap: u32,
-    mut on_tile: impl FnMut(usize, usize),
-) -> Result<Vec<u8>> {
-    let factor = upscaler.factor as usize;
-    let tile = tile as usize;
-    let overlap = overlap as usize;
-    let stride = tile.saturating_sub(overlap).max(1);
-    let starts_x = tile_starts(width, tile, stride);
-    let starts_y = tile_starts(height, tile, stride);
-    let out_w = width * factor;
-    let out_h = height * factor;
-    let total_tiles = starts_x.len() * starts_y.len();
-    let mut accum = vec![0f32; out_w * out_h * 3];
-    let mut weights = vec![0f32; out_w * out_h];
-    let mut done = 0usize;
-
-    for &start_y in &starts_y {
-        for &start_x in &starts_x {
-            let mut input = vec![0f32; 3 * tile * tile];
-            for ty in 0..tile {
-                let sy = (start_y + ty).min(height - 1);
-                for tx in 0..tile {
-                    let sx = (start_x + tx).min(width - 1);
-                    let source = (sy * width + sx) * 3;
-                    for channel in 0..3 {
-                        input[(channel * tile + ty) * tile + tx] =
-                            rgb[source + channel] as f32 / 255.0;
-                    }
-                }
-            }
-            let output = upscaler.infer(tile as u32, &input)?;
-            if std::env::var("GPUTOOL_UPSCALE_DEBUG").is_ok() && done == 0 {
-                let mut means = [0f32; 3];
-                for channel in 0..3 {
-                    let mut sum = 0f64;
-                    for index in 0..tile * tile {
-                        sum += input[(channel * tile * tile) + index] as f64;
-                    }
-                    means[channel] = (sum / (tile * tile) as f64) as f32;
-                }
-                let mut out_means = [0f32; 3];
-                let out_side = tile * factor;
-                for channel in 0..3 {
-                    let mut sum = 0f64;
-                    for index in 0..out_side * out_side {
-                        sum += output[(channel * out_side * out_side) + index].clamp(0.0, 1.0) as f64;
-                    }
-                    out_means[channel] = (sum / (out_side * out_side) as f64) as f32;
-                }
-                eprintln!("debug input means {:?} output means {:?}", means, out_means);
-            }
-            let out_side = tile * factor;
-            let left_overlap = start_x > 0;
-            let right_overlap = start_x + tile < width;
-            let top_overlap = start_y > 0;
-            let bottom_overlap = start_y + tile < height;
-            let weight_x = axis_weights(out_side, factor, overlap, left_overlap, right_overlap);
-            let weight_y = axis_weights(out_side, factor, overlap, top_overlap, bottom_overlap);
-            for oy in 0..out_side {
-                let py = start_y * factor + oy;
-                if py >= out_h {
-                    continue;
-                }
-                for ox in 0..out_side {
-                    let px = start_x * factor + ox;
-                    if px >= out_w {
-                        continue;
-                    }
-                    let mut weight = weight_x[ox].min(weight_y[oy]);
-                    if weight <= 0.0 {
-                        weight = 0.001;
-                    }
-                    let index = (py * out_w + px) * 3;
-                    for channel in 0..3 {
-                        // Выход модели — NCHW: канал это отдельная плоскость.
-                        let tile_index = channel * out_side * out_side + oy * out_side + ox;
-                        let value = output
-                            .get(tile_index)
-                            .copied()
-                            .unwrap_or(0.0)
-                            .clamp(0.0, 1.0);
-                        accum[index + channel] += value * weight;
-                    }
-                    weights[py * out_w + px] += weight;
-                }
-            }
-            done += 1;
-            on_tile(done, total_tiles);
-        }
-    }
-
-    let mut result = vec![0u8; out_w * out_h * 3];
-    for pixel in 0..out_w * out_h {
-        let weight = weights[pixel].max(0.0001);
-        for channel in 0..3 {
-            let value = accum[pixel * 3 + channel] / weight;
-            result[pixel * 3 + channel] = (value.clamp(0.0, 1.0) * 255.0).round() as u8;
-        }
-    }
-    Ok(result)
-}
-
-// ------------------------------------------------------------------ картинки
+// ------------------------------------------------------------------ IO кадров
 
 fn is_image(path: &Path) -> bool {
     matches!(
-        path.extension().and_then(|value| value.to_str()).unwrap_or("").to_ascii_lowercase().as_str(),
-        "png" | "jpg" | "jpeg" | "webp" | "bmp"
+        path.extension().and_then(|value| value.to_str()).map(|value| value.to_ascii_lowercase()).as_deref(),
+        Some("png" | "jpg" | "jpeg" | "webp" | "bmp")
     )
 }
 
-fn run_image(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Value> {
-    let source = Path::new(&config.source);
-    let started = Instant::now();
-    let image = image::open(source)
-        .with_context(|| format!("cannot decode {}", source.display()))?;
-    let has_alpha = matches!(image, DynamicImage::ImageRgba8(_) | DynamicImage::ImageLumaA8(_));
-    let rgb_image = image.to_rgb8();
-    let (width, height) = (rgb_image.width() as usize, rgb_image.height() as usize);
-    let pixel_count = width * height;
-    if pixel_count > 16_000_000 {
-        bail!(
-            "image is too large for tiled accumulation ({} MPix); split it first",
-            pixel_count / 1_000_000
-        );
+fn decode_frame(path: &Path) -> Result<(usize, usize, Vec<u8>)> {
+    let image = image::open(path).with_context(|| format!("cannot decode {}", path.display()))?;
+    let rgb = image.to_rgb8();
+    Ok((rgb.width() as usize, rgb.height() as usize, rgb.into_raw()))
+}
+
+fn encode_frame(path: &Path, width: usize, height: usize, rgb: &[u8]) -> Result<()> {
+    let file = BufWriter::new(File::create(path)?);
+    let encoder = PngEncoder::new_with_quality(file, CompressionType::Fast, FilterType::Adaptive);
+    encoder
+        .write_image(rgb, width as u32, height as u32, ExtendedColorType::Rgb8)
+        .with_context(|| format!("cannot encode {}", path.display()))?;
+    Ok(())
+}
+
+fn collect_frames(source: &Path) -> Result<Vec<PathBuf>> {
+    let mut frames: Vec<PathBuf> = if source.is_dir() {
+        fs::read_dir(source)?
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.is_file() && is_image(path))
+            .collect()
+    } else {
+        vec![source.to_path_buf()]
+    };
+    frames.sort();
+    if frames.is_empty() {
+        bail!("decode-failed: нет кадров в {}", source.display());
     }
-    emit_log(job, format!("image {width}x{height}, tile={} overlap={} alpha={has_alpha}", config.tile(), config.overlap()));
-    let rgb = rgb_image.into_raw();
-    let tile = config.tile();
-    let overlap = config.overlap();
+    Ok(frames)
+}
+
+// ------------------------------------------------------------------ папка кадров / картинка
+
+fn run_frames(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Value> {
+    let source = Path::new(&config.source);
+    let frames = collect_frames(source)?;
+    let output_dir = config
+        .output
+        .clone()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| source.parent().unwrap_or_else(|| Path::new(".")).to_path_buf());
+    fs::create_dir_all(&output_dir)?;
+    let total = frames.len();
+    let batch_size = config.batch();
+    let started = Instant::now();
+    let mut decode_ns = 0u128;
+    let mut infer_ns = 0u128;
+    let mut encode_ns = 0u128;
+    let mut done = 0usize;
     let mut last_emit = Instant::now();
-    let upscaled = upscale_rgb(upscaler, &rgb, width, height, tile, overlap, |done, total| {
-        if last_emit.elapsed().as_millis() >= 300 || done == total {
-            emit_progress(job, done, Some(total), started, "tiles");
+
+    for chunk in frames.chunks(batch_size) {
+        let mut decoded: Vec<(usize, usize, Vec<u8>)> = Vec::with_capacity(chunk.len());
+        let t_decode = Instant::now();
+        for path in chunk {
+            decoded.push(decode_frame(path)?);
+        }
+        decode_ns += t_decode.elapsed().as_nanos();
+        let (width, height) = (decoded[0].0, decoded[0].1);
+        if decoded.iter().any(|(w, h, _)| *w != width || *h != height) {
+            // Разные размеры — обрабатываем по одному, чтобы не ломать батч.
+            for (index, path) in chunk.iter().enumerate() {
+                let single = decoded[index].2.clone();
+                let t_infer = Instant::now();
+                let mut out = upscaler.upscale_batch(&[single.as_slice()], width, height)?;
+                infer_ns += t_infer.elapsed().as_nanos();
+                let t_encode = Instant::now();
+                let target = output_path(config, path, &output_dir);
+                encode_frame(&target, width * 2, height * 2, &out.remove(0))?;
+                encode_ns += t_encode.elapsed().as_nanos();
+                done += 1;
+            }
+            continue;
+        }
+        let refs: Vec<&[u8]> = decoded.iter().map(|(_, _, data)| data.as_slice()).collect();
+        let t_infer = Instant::now();
+        let outputs = upscaler.upscale_batch(&refs, width, height)?;
+        infer_ns += t_infer.elapsed().as_nanos();
+        let t_encode = Instant::now();
+        for (index, path) in chunk.iter().enumerate() {
+            let target = output_path(config, path, &output_dir);
+            encode_frame(&target, width * 2, height * 2, &outputs[index])?;
+        }
+        encode_ns += t_encode.elapsed().as_nanos();
+        done += chunk.len();
+        if last_emit.elapsed().as_millis() >= 500 || done == total {
+            emit_progress(job, done, Some(total), started, "frames", None);
             last_emit = Instant::now();
         }
-    })?;
-    let factor = upscaler.factor as usize;
-    let out_w = (width * factor) as u32;
-    let out_h = (height * factor) as u32;
-    let output_path = resolve_output(config, source, "png");
-
-    let buffer: ImageBuffer<Rgb<u8>, Vec<u8>> =
-        ImageBuffer::from_raw(out_w, out_h, upscaled).ok_or_else(|| anyhow!("bad output buffer"))?;
-    if has_alpha {
-        let alpha = image.to_rgba8();
-        let alpha = image::imageops::resize(&alpha, out_w, out_h, image::imageops::FilterType::Lanczos3);
-        let mut rgba: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_raw(out_w, out_h, vec![0u8; out_w as usize * out_h as usize * 4])
-            .ok_or_else(|| anyhow!("bad alpha buffer"))?;
-        for y in 0..out_h as usize {
-            for x in 0..out_w as usize {
-                let pixel = buffer.get_pixel(x as u32, y as u32);
-                let a = alpha.get_pixel(x as u32, y as u32)[3];
-                rgba.put_pixel(x as u32, y as u32, Rgba([pixel[0], pixel[1], pixel[2], a]));
-            }
-        }
-        DynamicImage::ImageRgba8(rgba).save(&output_path)?;
-    } else {
-        DynamicImage::ImageRgb8(buffer).save(&output_path)?;
     }
-    let bytes = fs::metadata(&output_path).map(|meta| meta.len()).unwrap_or(0);
+    let elapsed = started.elapsed();
+    let fps = done as f64 / elapsed.as_secs_f64().max(0.001);
     Ok(json!({
         "engine": "rust",
         "device": "cuda:0",
         "providers": ["CUDAExecutionProvider"],
-        "scale": factor,
-        "input": {"width": width, "height": height},
-        "output": output_path.to_string_lossy(),
-        "width": out_w,
-        "height": out_h,
-        "bytes": bytes,
-        "elapsedMs": started.elapsed().as_millis(),
+        "scale": 2,
+        "batch": batch_size,
+        "frames": done,
+        "fps": (fps * 100.0).round() / 100.0,
+        "inferMsPerFrame": (infer_ns as f64 / 1e6 / done.max(1) as f64 * 100.0).round() / 100.0,
+        "decodeMsPerFrame": (decode_ns as f64 / 1e6 / done.max(1) as f64 * 100.0).round() / 100.0,
+        "encodeMsPerFrame": (encode_ns as f64 / 1e6 / done.max(1) as f64 * 100.0).round() / 100.0,
+        "elapsedMs": elapsed.as_millis(),
+        "outputDir": output_dir.to_string_lossy(),
     }))
 }
 
-fn resolve_output(config: &Config, source: &Path, extension: &str) -> PathBuf {
-    if let Some(output) = &config.output {
-        return PathBuf::from(output);
+fn output_path(config: &Config, source: &Path, output_dir: &Path) -> PathBuf {
+    if config.output.is_some() && !output_dir.is_dir() {
+        return output_dir.to_path_buf();
     }
-    let stem = source.file_stem().and_then(|value| value.to_str()).unwrap_or("output");
-    let dir = source.parent().unwrap_or_else(|| Path::new("."));
-    dir.join(format!("{stem}.4x.{extension}"))
+    let stem = source.file_stem().and_then(|value| value.to_str()).unwrap_or("frame");
+    output_dir.join(format!("{stem}_x2.png"))
 }
 
 // ------------------------------------------------------------------ видео
@@ -422,9 +358,7 @@ fn probe_video(config: &Config, source: &Path) -> Result<(u32, u32, f64, f64, bo
         .streams
         .iter()
         .find(|stream| stream.codec_type.as_deref() == Some("video") && stream.width.unwrap_or(0) > 0)
-        .ok_or_else(|| anyhow!("no video stream"))?;
-    let width = video.width.unwrap_or(0);
-    let height = video.height.unwrap_or(0);
+        .ok_or_else(|| anyhow!("decode-failed: no video stream"))?;
     let mut fps = 0f64;
     if let Some((num, den)) = video.avg_frame_rate.as_deref().unwrap_or("").split_once('/') {
         let num: f64 = num.parse().unwrap_or(0.0);
@@ -443,7 +377,7 @@ fn probe_video(config: &Config, source: &Path) -> Result<(u32, u32, f64, f64, bo
         .and_then(|value| value.parse::<f64>().ok())
         .unwrap_or(0.0);
     let has_audio = probe.streams.iter().any(|stream| stream.codec_type.as_deref() == Some("audio"));
-    Ok((width, height, fps, duration, has_audio))
+    Ok((video.width.unwrap_or(0), video.height.unwrap_or(0), fps, duration, has_audio))
 }
 
 fn run_video(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Value> {
@@ -452,21 +386,16 @@ fn run_video(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Valu
     let (width, height, source_fps, source_duration, has_audio) = probe_video(config, source)?;
     let fps = config.fps.unwrap_or(source_fps);
     let start = config.start_sec.unwrap_or(0.0).max(0.0);
-    let duration = config
-        .duration_sec
-        .unwrap_or_else(|| (source_duration - start).max(0.0));
+    let duration = config.duration_sec.unwrap_or_else(|| (source_duration - start).max(0.0));
     let total_frames = ((duration * fps).round() as usize).max(1);
-    let factor = upscaler.factor as usize;
-    let out_w = (width as usize * factor) as u32;
-    let out_h = (height as usize * factor) as u32;
-    let output_path = config
-        .output
-        .clone()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| source.with_file_name(format!(
-            "{}.4x.mp4",
+    let out_w = width * 2;
+    let out_h = height * 2;
+    let output_path = config.output.clone().map(PathBuf::from).unwrap_or_else(|| {
+        source.with_file_name(format!(
+            "{}.x2.mp4",
             source.file_stem().and_then(|value| value.to_str()).unwrap_or("video")
-        )));
+        ))
+    });
     if output_path.exists() && config.overwrite != Some(true) {
         bail!("output already exists: {}", output_path.display());
     }
@@ -481,10 +410,9 @@ fn run_video(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Valu
         "quality" => ("p7", "hq", "19"),
         _ => ("p5", "hq", "22"),
     };
-
     emit_log(
         job,
-        format!("video {width}x{height}@{source_fps:.2} -> {out_w}x{out_h}@{fps:.2}, tile={} overlap={}", config.tile(), config.overlap()),
+        format!("video {width}x{height}@{source_fps:.2} -> {out_w}x{out_h}@{fps:.2}, batch={}, no tiling", config.batch()),
     );
 
     let mut decoder_args: Vec<String> = vec![
@@ -507,7 +435,7 @@ fn run_video(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Valu
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context("cannot start ffmpeg decoder")?;
+        .context("decode-failed: cannot start ffmpeg")?;
 
     let encoder_args: Vec<String> = vec![
         "-hide_banner".into(), "-nostdin".into(), "-loglevel".into(), "error".into(),
@@ -528,42 +456,55 @@ fn run_video(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Valu
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context("cannot start ffmpeg encoder")?;
+        .context("encode-failed: cannot start ffmpeg")?;
 
     let mut decoder_out = decoder.stdout.take().context("decoder stdout")?;
     let mut encoder_in = encoder_process.stdin.take().context("encoder stdin")?;
     let frame_bytes = width as usize * height as usize * 3;
-    let mut frame = vec![0u8; frame_bytes];
-    let mut upscaled = vec![0u8; out_w as usize * out_h as usize * 3];
+    let batch_size = config.batch();
     let mut processed = 0usize;
+    let mut infer_ns = 0u128;
     let mut last_emit = Instant::now();
-    let tile = config.tile();
-    let overlap = config.overlap();
     let mut failure: Option<anyhow::Error> = None;
 
-    loop {
-        match decoder_out.read_exact(&mut frame) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(error) => {
-                failure = Some(anyhow!("decoder read failed: {error}"));
+    'outer: loop {
+        let mut frames: Vec<Vec<u8>> = Vec::with_capacity(batch_size);
+        for _ in 0..batch_size {
+            let mut frame = vec![0u8; frame_bytes];
+            match decoder_out.read_exact(&mut frame) {
+                Ok(()) => frames.push(frame),
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(error) => {
+                    failure = Some(anyhow!("decode-failed: {error}"));
+                    break 'outer;
+                }
+            }
+            if processed + frames.len() >= total_frames {
                 break;
             }
         }
-        match upscale_rgb(upscaler, &frame, width as usize, height as usize, tile, overlap, |_, _| {}) {
-            Ok(next) => upscaled = next,
+        if frames.is_empty() {
+            break;
+        }
+        let refs: Vec<&[u8]> = frames.iter().map(|frame| frame.as_slice()).collect();
+        let t_infer = Instant::now();
+        let outputs = match upscaler.upscale_batch(&refs, width as usize, height as usize) {
+            Ok(outputs) => outputs,
             Err(error) => {
                 failure = Some(error);
                 break;
             }
+        };
+        infer_ns += t_infer.elapsed().as_nanos();
+        for output in outputs {
+            if let Err(error) = encoder_in.write_all(&output) {
+                failure = Some(anyhow!("encode-failed: {error}"));
+                break 'outer;
+            }
+            processed += 1;
         }
-        if let Err(error) = encoder_in.write_all(&upscaled) {
-            failure = Some(anyhow!("encoder write failed: {error}"));
-            break;
-        }
-        processed += 1;
-        if last_emit.elapsed().as_millis() >= 500 || processed == total_frames {
-            emit_progress(job, processed, Some(total_frames), started, "frames");
+        if last_emit.elapsed().as_millis() >= 500 || processed >= total_frames {
+            emit_progress(job, processed, Some(total_frames), started, "frames", None);
             last_emit = Instant::now();
         }
         if processed >= total_frames {
@@ -583,7 +524,7 @@ fn run_video(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Valu
         if let Some(mut stderr) = decoder.stderr.take() {
             let _ = stderr.read_to_string(&mut message);
         }
-        bail!("decoder failed: {}", message.trim());
+        bail!("decode-failed: {}", message.trim());
     }
     if !encoder_status.success() {
         let _ = fs::remove_file(&output_path);
@@ -591,66 +532,96 @@ fn run_video(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Valu
         if let Some(mut stderr) = encoder_process.stderr.take() {
             let _ = stderr.read_to_string(&mut message);
         }
-        bail!("encoder failed: {}", message.trim());
+        bail!("encode-failed: {}", message.trim());
     }
     let bytes = fs::metadata(&output_path).map(|meta| meta.len()).unwrap_or(0);
+    let elapsed = started.elapsed();
     Ok(json!({
         "engine": "rust",
         "device": "cuda:0",
         "providers": ["CUDAExecutionProvider"],
-        "scale": factor,
+        "scale": 2,
+        "batch": batch_size,
         "frames": processed,
         "fps": fps,
+        "processedFps": ((processed as f64 / elapsed.as_secs_f64().max(0.001)) * 100.0).round() / 100.0,
+        "inferMsPerFrame": (infer_ns as f64 / 1e6 / processed.max(1) as f64 * 100.0).round() / 100.0,
         "hasAudio": has_audio,
         "output": output_path.to_string_lossy(),
         "width": out_w,
         "height": out_h,
         "bytes": bytes,
-        "elapsedMs": started.elapsed().as_millis(),
+        "elapsedMs": elapsed.as_millis(),
     }))
 }
 
 // ------------------------------------------------------------------ прогон
 
 fn run_job(job: &str, config: &Config, upscaler: &mut Option<Upscaler>) -> Result<Value> {
+    config.check_tile()?;
     if upscaler.is_none() {
         let started = Instant::now();
         let loaded = Upscaler::load(Path::new(&config.model))?;
-        emit_log(job, format!("CUDA session ready in {} ms (scale {}x)", started.elapsed().as_millis(), loaded.factor));
+        emit_log(job, format!("CUDA fp16 session ready in {} ms (x2)", started.elapsed().as_millis()));
         *upscaler = Some(loaded);
     }
     let engine = upscaler.as_mut().expect("upscaler");
     let source = Path::new(&config.source);
-    if !source.is_file() {
-        bail!("source not found: {}", source.display());
+    if !source.exists() {
+        bail!("input-missing: {}", source.display());
     }
-    if is_image(source) {
-        run_image(job, config, engine)
+    if source.is_dir() || is_image(source) {
+        run_frames(job, config, engine)
     } else {
         run_video(job, config, engine)
     }
 }
 
-fn probe(model: &Path, tile: u32) -> Result<()> {
+fn probe(model: &Path) -> Result<()> {
     let started = Instant::now();
     let mut upscaler = Upscaler::load(model)?;
     let load_ms = started.elapsed().as_millis();
-    let input = vec![0.3f32; 3 * tile as usize * tile as usize];
-    upscaler.infer(tile, &input)?;
+    let input = vec![f16::ZERO; 3 * 64 * 64];
+    upscaler.infer_raw(1, 64, 64, input.as_slice())?;
     let begin = Instant::now();
-    upscaler.infer(tile, &input)?;
-    let infer_ms = begin.elapsed().as_millis();
+    for _ in 0..3 {
+        upscaler.infer_raw(1, 64, 64, input.as_slice())?;
+    }
+    let ms = begin.elapsed().as_secs_f64() * 1000.0 / 3.0;
     emit(json!({
         "type": "probe",
-        "ok": true,
+        "engine": "rust",
         "device": "cuda:0",
         "providers": ["CUDAExecutionProvider"],
-        "factor": upscaler.factor,
-        "tile": tile,
+        "scale": 2,
+        "precision": "fp16",
         "loadMs": load_ms,
-        "inferMs": infer_ms,
+        "msPerFrame64": (ms * 100.0).round() / 100.0,
     }));
     Ok(())
+}
+
+fn classify(error: &anyhow::Error) -> &'static str {
+    let text = error.to_string();
+    if text.starts_with("cuda-unavailable") || text.contains("CUDA") {
+        "cuda-unavailable"
+    } else if text.starts_with("model-fp16-required") {
+        "model-fp16-required"
+    } else if text.starts_with("unsupported-scale") {
+        "unsupported-scale"
+    } else if text.starts_with("tiling-not-supported") {
+        "tiling-not-supported"
+    } else if text.starts_with("input-missing") {
+        "input-missing"
+    } else if text.starts_with("decode-failed") {
+        "decode-failed"
+    } else if text.starts_with("encode-failed") {
+        "encode-failed"
+    } else if text.starts_with("model not found") {
+        "model-missing"
+    } else {
+        "upscale-failed"
+    }
 }
 
 fn main() -> Result<()> {
@@ -658,15 +629,13 @@ fn main() -> Result<()> {
     let value = |flag: &str| -> Option<String> {
         args.iter().position(|item| item == flag).and_then(|index| args.get(index + 1)).cloned()
     };
-    if args.iter().any(|item| item == "--probe") {
-        let model = value("--model").ok_or_else(|| anyhow!("--model is required for --probe"))?;
-        let tile = value("--tile").and_then(|item| item.parse().ok()).unwrap_or(256);
-        return probe(Path::new(&model), tile);
-    }
     if args.iter().any(|item| item == "--serve") {
         return serve();
     }
-    let config_path = value("--config").ok_or_else(|| anyhow!("--config or --serve is required"))?;
+    if let Some(model) = value("--probe") {
+        return probe(Path::new(&model));
+    }
+    let config_path = value("--config").ok_or_else(|| anyhow!("--config, --probe или --serve обязательны"))?;
     let text = fs::read_to_string(&config_path)?;
     let config: Config = serde_json::from_str(&text).context("bad config json")?;
     let mut upscaler: Option<Upscaler> = None;
@@ -682,28 +651,10 @@ fn main() -> Result<()> {
     }
 }
 
-fn classify(error: &anyhow::Error) -> &'static str {
-    let text = error.to_string();
-    if text.contains("CUDA EP is unavailable") {
-        "cuda-ep-unavailable"
-    } else if text.contains("GPU-only session failed") {
-        "gpu-unsupported"
-    } else if text.contains("model not found") {
-        "upscale-model-missing"
-    } else if text.contains("source not found") {
-        "input-missing"
-    } else if text.contains("scale factor") {
-        "upscale-factor-unsupported"
-    } else {
-        "upscale-failed"
-    }
-}
-
 fn serve() -> Result<()> {
     let mut upscaler: Option<Upscaler> = None;
-    emit(json!({"type": "ready", "engine": "rust" }));
-    let stdin = std::io::stdin();
-    for line in stdin.lock().lines() {
+    emit(json!({"type": "ready", "engine": "rust"}));
+    for line in std::io::stdin().lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
@@ -715,8 +666,7 @@ fn serve() -> Result<()> {
                 continue;
             }
         };
-        let kind = command["type"].as_str().unwrap_or("");
-        match kind {
+        match command["type"].as_str().unwrap_or("") {
             "ping" => emit(json!({"type": "pong"})),
             "shutdown" => break,
             "run" => {
@@ -748,23 +698,55 @@ fn serve() -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn tile_starts_cover_the_image_without_gaps() {
-        assert_eq!(tile_starts(100, 256, 240), vec![0]);
-        assert_eq!(tile_starts(512, 256, 240), vec![0, 240, 256]);
-        let starts = tile_starts(1000, 256, 240);
-        assert_eq!(*starts.last().unwrap(), 1000 - 256);
-        for pair in starts.windows(2) {
-            assert!(pair[1] <= pair[0] + 240);
-            assert!(pair[1] > pair[0]);
+    fn config(source: &str) -> Config {
+        Config {
+            source: source.into(),
+            output: None,
+            model: "/tmp/m.onnx".into(),
+            batch: None,
+            tile: None,
+            codec: None,
+            quality: None,
+            start_sec: None,
+            duration_sec: None,
+            fps: None,
+            ffmpeg_path: None,
+            ffprobe_path: None,
+            overwrite: None,
         }
     }
 
     #[test]
-    fn weights_ramp_on_shared_edges_and_stay_one_inside() {
-        let weights = axis_weights(8, 4, 1, true, true);
-        assert!(weights[0] < 0.2);
-        assert!((weights[4] - 1.0).abs() < f32::EPSILON);
-        assert!(weights[7] < 0.2);
+    fn tile_is_rejected() {
+        let mut cfg = config("/tmp/x");
+        cfg.tile = Some(256);
+        assert!(cfg.check_tile().is_err());
+        cfg.tile = Some(0);
+        assert!(cfg.check_tile().is_ok());
+    }
+
+    #[test]
+    fn batch_defaults_and_clamps() {
+        let mut cfg = config("/tmp/x");
+        assert_eq!(cfg.batch(), 8);
+        cfg.batch = Some(0);
+        assert_eq!(cfg.batch(), 1);
+        cfg.batch = Some(1000);
+        assert_eq!(cfg.batch(), 64);
+    }
+
+    #[test]
+    fn frame_paths_are_sorted_and_suffixed() {
+        let dir = std::env::temp_dir();
+        let a = dir.join("b.png");
+        let b = dir.join("a.png");
+        assert!(output_path(&conv(&dir), &b, &dir).to_string_lossy().ends_with("a_x2.png"));
+        assert!(output_path(&conv(&dir), &a, &dir).to_string_lossy().ends_with("b_x2.png"));
+    }
+
+    fn conv(dir: &Path) -> Config {
+        let mut cfg = config("/tmp/x");
+        cfg.output = Some(dir.to_string_lossy().into_owned());
+        cfg
     }
 }

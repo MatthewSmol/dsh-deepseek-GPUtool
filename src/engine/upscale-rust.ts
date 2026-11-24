@@ -1,10 +1,9 @@
 /**
- * GPU-only апскейл 4x-UltraSharp: постоянный Rust-воркер `bin/gputool-upscale`.
+ * GPU-only x2-апскейл (SPAN fp16): постоянный Rust-воркер `bin/gputool-upscale`.
  *
  * Инференс строго на CUDA: воркер создаёт сессию ORT с
- * `session.disable_cpu_ep_fallback`, поэтому модель либо целиком на GPU, либо
- * задание падает с `cuda-ep-unavailable`/`gpu-unsupported`. Картинки тайлятся с
- * перекрытием, видео идёт пайпом NVDEC → CUDA → NVENC.
+ * `session.disable_cpu_ep_fallback`, модель обязана быть fp16 и давать ровно x2.
+ * Кадры идут батчами, без тайлинга; видео — NVDEC → CUDA → NVENC.
  */
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -28,7 +27,7 @@ export function upscaleBinary(): string {
 export function upscaleModelPath(settings: Settings, requested?: string): string {
   if (requested) return requested
   if (settings.upscaleModelPath) return settings.upscaleModelPath
-  return join(settings.modelsDir, 'upscale', '4x-UltraSharp.onnx')
+  return join(settings.modelsDir, 'upscale', 'span2x_ch48_fp16.onnx')
 }
 
 /** Готов ли GPU-путь: бинарник, ORT-библиотека и файл модели. */
@@ -50,8 +49,7 @@ export interface UpscaleParams {
   sources?: string[]
   output?: string
   model?: string
-  tile?: number
-  overlap?: number
+  batch?: number
   codec?: 'hevc' | 'h264'
   quality?: 'fast' | 'balanced' | 'quality'
   startSec?: number
@@ -65,8 +63,7 @@ export interface UpscaleConfig {
   source: string
   output: string
   model: string
-  tile: number
-  overlap: number
+  batch: number
   overlay?: never
   codec?: 'hevc' | 'h264'
   quality?: string
@@ -90,6 +87,7 @@ export interface UpscaleResult {
   elapsedMs: number
   frames?: number
   fps?: number
+  inferMsPerFrame?: number
 }
 
 /** Проверяет параметры и собирает конфигурацию для конкретного источника. */
@@ -99,13 +97,9 @@ export function buildUpscaleConfig(
   source: string,
   output: string,
 ): UpscaleConfig {
-  const tile = Math.round(params.tile ?? settings.upscaleTile ?? 256)
-  const overlap = Math.round(params.overlap ?? settings.upscaleOverlap ?? 16)
-  if (tile < 64 || tile > 512) {
-    throw Object.assign(new Error('tile must be between 64 and 512'), { code: 'invalid-args' })
-  }
-  if (overlap < 0 || overlap > Math.floor(tile / 4)) {
-    throw Object.assign(new Error(`overlap must be between 0 and ${Math.floor(tile / 4)}`), { code: 'invalid-args' })
+  const batch = Math.round(params.batch ?? settings.upscaleBatch ?? 8)
+  if (batch < 1 || batch > 64) {
+    throw Object.assign(new Error('batch must be between 1 and 64'), { code: 'invalid-args' })
   }
   if (!existsSync(source)) throw Object.assign(new Error(`Source not found: ${source}`), { code: 'input-missing' })
   const model = upscaleModelPath(settings, params.model)
@@ -114,8 +108,7 @@ export function buildUpscaleConfig(
     source,
     output,
     model,
-    tile,
-    overlap,
+    batch,
     codec: params.codec ?? (settings.upscaleCodec as 'hevc' | 'h264') ?? 'hevc',
     quality: params.quality ?? settings.upscaleQuality ?? 'balanced',
     startSec: params.startSec,
@@ -257,7 +250,7 @@ export class RustUpscaleWorker {
         engine: 'rust',
         device: String(result.device ?? 'cuda:0'),
         providers: Array.isArray(result.providers) ? result.providers.map(String) : ['CUDAExecutionProvider'],
-        scale: Number(result.scale ?? 4),
+        scale: Number(result.scale ?? 2),
         output: String(result.output ?? ''),
         width: Number(result.width ?? 0),
         height: Number(result.height ?? 0),
@@ -265,6 +258,7 @@ export class RustUpscaleWorker {
         elapsedMs: Number(result.elapsedMs ?? 0),
         frames: result.frames != null ? Number(result.frames) : undefined,
         fps: result.fps != null ? Number(result.fps) : undefined,
+        inferMsPerFrame: result.inferMsPerFrame != null ? Number(result.inferMsPerFrame) : undefined,
       })
       this.pending = null
       return
