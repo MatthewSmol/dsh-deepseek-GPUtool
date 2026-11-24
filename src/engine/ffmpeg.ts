@@ -90,6 +90,8 @@ export interface FfmpegParams {
   /** Переопределяет CQ (NVENC) / CRF (CPU) из пресета quality. */
   cq?: number
   scale?: string
+  /** Полная цепочка видео-фильтров (после автоматического hwdownload при GPU-декоде). */
+  vf?: string
   fps?: number
   audio?: 'copy' | 'aac' | 'none'
   startSec?: number
@@ -360,16 +362,37 @@ export function buildFfmpegPlan(
 
   const inputArgs = (input: string): string[] => {
     const args: string[] = []
-    if (isGpu && params.hwaccel !== 'off') {
+    if (isGpu && params.hwaccel !== 'off' && !softwareFilters()) {
       args.push('-hwaccel', 'cuda', '-hwaccel_device', String(deviceIndex))
     }
     args.push('-i', input)
     return args
   }
 
-  const vfFilter = (): string[] => {
-    if (!params.scale) return []
-    return ['-vf', `scale=${params.scale.replace('x', ':')}`]
+  if (params.operation !== 'raw' && params.args?.length) {
+    throw Object.assign(
+      new Error('args is supported only for operation "raw"; use vf for video filters'),
+      { code: 'args-raw-only' },
+    )
+  }
+  const filterParts = (): string[] => {
+    const parts: string[] = []
+    if (params.scale) parts.push(`scale=${params.scale.replace('x', ':')}`)
+    if (params.vf && params.vf.trim()) parts.push(params.vf.trim().replace(/^,+|,+$/g, ''))
+    return parts.filter(Boolean)
+  }
+  const hasFilters = (): boolean => filterParts().length > 0
+  // Программные фильтры (scale/unsharp/crop…) не работают на CUDA-кадрах:
+  // в этом случае декодируем CPU, а энкодер всё равно NVENC.
+  const softwareFilters = (): boolean =>
+    filterParts().some((part) => !/^(scale_cuda|libplacebo|hwdownload|hwupload)/.test(part.trim().split('=')[0] ?? ''))
+  const filterArgs = (): string[] => {
+    const chain = filterParts().join(',')
+    if (!chain) return []
+    if (isGpu && params.hwaccel !== 'off' && softwareFilters()) {
+      warnings.push('software video filters: NVDEC is disabled for this job (decode on CPU, encode stays NVENC)')
+    }
+    return ['-vf', chain]
   }
 
   let argv: string[] = []
@@ -383,11 +406,20 @@ export function buildFfmpegPlan(
     case 'encode': {
       if (!params.input) throw Object.assign(new Error('input is required'), { code: 'invalid-args' })
       if (!params.output) throw Object.assign(new Error('output is required'), { code: 'invalid-args' })
+      if (params.codec === 'copy' && hasFilters()) {
+        throw Object.assign(new Error('video filters cannot be used with codec "copy"; re-encode or drop vf/scale'), { code: 'filters-with-copy' })
+      }
+      const start = params.startSec ?? 0
+      const duration =
+        params.durationSec ?? (params.endSec != null ? Math.max(0, params.endSec - start) : undefined)
+      if (start > 0) argv.push('-ss', seconds(start))
       const picked = pickEncoder()
       usedEncoder = picked.used
-      argv.push(...base, ...inputArgs(params.input), ...vfFilter())
+      argv.push(...base, ...inputArgs(params.input))
+      if (duration != null && duration > 0) argv.push('-t', seconds(duration))
       if (params.fps) argv.push('-r', String(params.fps))
-      argv.push(...picked.args, ...audioArgs(), '-movflags', '+faststart', params.output)
+      argv.push(...filterArgs(), ...picked.args, ...audioArgs(), '-movflags', '+faststart', params.output)
+      if (duration != null) totalMs = Math.round(duration * 1000)
       operations.push('encode')
       break
     }
@@ -404,12 +436,15 @@ export function buildFfmpegPlan(
       const duration =
         params.durationSec ?? (params.endSec != null ? Math.max(0, params.endSec - start) : probe?.durationSec != null ? Math.max(0, probe.durationSec - start) : undefined)
       if (params.codec === 'copy' || params.codec === undefined) {
+        if (hasFilters()) {
+          throw Object.assign(new Error('video filters cannot be used with codec "copy"; re-encode or drop vf/scale'), { code: 'filters-with-copy' })
+        }
         argv.push(...base, '-ss', seconds(start), ...inputArgs(params.input), '-t', seconds(duration), '-c', 'copy', '-avoid_negative_ts', 'make_zero', params.output)
         usedEncoder = 'copy'
       } else {
         const picked = pickEncoder()
         usedEncoder = picked.used
-        argv.push(...base, '-ss', seconds(start), ...inputArgs(params.input), '-t', seconds(duration), ...vfFilter(), ...picked.args, ...audioArgs(), params.output)
+        argv.push(...base, '-ss', seconds(start), ...inputArgs(params.input), '-t', seconds(duration), ...filterArgs(), ...picked.args, ...audioArgs(), params.output)
       }
       totalMs = duration != null ? Math.round(duration * 1000) : totalMs
       operations.push('trim')
@@ -431,8 +466,11 @@ export function buildFfmpegPlan(
       if (reencode) {
         const picked = pickEncoder()
         usedEncoder = picked.used
-        argv.push(...base, ...inputArgs(params.input), ...vfFilter(), ...picked.args, ...audioArgs(), '-f', 'segment', '-segment_time', seconds(segmentTime), '-reset_timestamps', '1', target)
+        argv.push(...base, ...inputArgs(params.input), ...filterArgs(), ...picked.args, ...audioArgs(), '-f', 'segment', '-segment_time', seconds(segmentTime), '-reset_timestamps', '1', target)
       } else {
+        if (hasFilters()) {
+          throw Object.assign(new Error('video filters cannot be used with codec "copy"; re-encode or drop vf/scale'), { code: 'filters-with-copy' })
+        }
         argv.push(...base, '-i', params.input, '-c', 'copy', '-f', 'segment', '-segment_time', seconds(segmentTime), '-reset_timestamps', '1', target)
         usedEncoder = 'copy'
       }
@@ -441,6 +479,9 @@ export function buildFfmpegPlan(
     }
     case 'concat': {
       if (!params.inputs?.length || !params.output) throw Object.assign(new Error('inputs and output are required'), { code: 'invalid-args' })
+      if (hasFilters()) {
+        throw Object.assign(new Error('video filters are not supported for concat; use raw'), { code: 'filters-without-input' })
+      }
       const listPath = join(settings.outputRoot, `.concat-${Date.now()}.txt`)
       const content = params.inputs.map((file) => `file '${file.replace(/'/g, "'\\''")}'`).join('\n')
       concatList = { path: listPath, content }
@@ -466,7 +507,10 @@ export function buildFfmpegPlan(
       if (start > 0) argv.push('-ss', seconds(start))
       argv.push('-i', params.input)
       if (duration != null && duration > 0) argv.push('-t', seconds(duration))
-      argv.push('-vf', `fps=${fps}`, '-q:v', '2', join(params.outputDir, `frame_%06d.${ext}`))
+      const frameFilters = [`fps=${fps}`]
+      if (params.scale) frameFilters.push(`scale=${params.scale.replace('x', ':')}`)
+      if (params.vf && params.vf.trim()) frameFilters.push(params.vf.trim().replace(/^,+|,+$/g, ''))
+      argv.push('-vf', frameFilters.join(','), '-q:v', '2', join(params.outputDir, `frame_%06d.${ext}`))
       if (duration != null) totalMs = Math.round(duration * 1000)
       operations.push('frames')
       break

@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { buildFfmpegPlan, buildMontagePlan, inferRawOutput, rawDurationFromArgs, type FfmpegParams, type MontageSceneInfo } from '../engine/ffmpeg.js'
+import { buildFfmpegDiagnostics } from '../engine/engine.js'
 import { defaultSettings } from '../engine/settings.js'
 import type { FfmpegCaps } from '../engine/types.js'
 
@@ -236,4 +237,124 @@ test('frames honours startSec and durationSec', () => {
   assert.ok(start >= 0 && plan.argv[start + 1] === '300', plan.argv.join(' '))
   assert.ok(input > start, 'seek must come before the input')
   assert.ok(end > input && plan.argv[end + 1] === '10', plan.argv.join(' '))
+})
+
+// --- vf, args и защита от тихого игнора --------------------------------------
+
+test('encode keeps software vf and disables NVDEC (NVENC still used)', () => {
+  const plan = buildFfmpegPlan(
+    { operation: 'encode', input: '/in.mp4', output: '/out.mp4', vf: 'scale=640:360,unsharp=5:5:0.5', overwrite: true },
+    caps(['scale', 'hwdownload', 'unsharp']),
+    defaultSettings(),
+    null,
+    0,
+  )
+  const index = plan.argv.indexOf('-vf')
+  assert.ok(index >= 0, plan.argv.join(' '))
+  assert.equal(plan.argv[index + 1], 'scale=640:360,unsharp=5:5:0.5')
+  assert.ok(!plan.argv.includes('-hwaccel'))
+  assert.ok(plan.argv.includes('hevc_nvenc'))
+  assert.ok(plan.warnings.some((warning) => warning.includes('NVDEC is disabled')))
+})
+
+test('encode with a pure CUDA filter chain keeps NVDEC', () => {
+  const plan = buildFfmpegPlan(
+    { operation: 'encode', input: '/in.mp4', output: '/out.mp4', vf: 'scale_cuda=640:360', overwrite: true },
+    caps(['scale_cuda', 'scale']),
+    defaultSettings(),
+    null,
+    0,
+  )
+  assert.ok(plan.argv.includes('-hwaccel'))
+  const index = plan.argv.indexOf('-vf')
+  assert.equal(plan.argv[index + 1], 'scale_cuda=640:360')
+})
+
+test('encode with hwaccel off keeps the filter chain as-is', () => {
+  const plan = buildFfmpegPlan(
+    { operation: 'encode', input: '/in.mp4', output: '/out.mp4', vf: 'scale=640:360', hwaccel: 'off', overwrite: true },
+    caps(['scale', 'hwdownload']),
+    defaultSettings(),
+    null,
+    0,
+  )
+  const index = plan.argv.indexOf('-vf')
+  assert.equal(plan.argv[index + 1], 'scale=640:360')
+  assert.ok(!plan.argv.includes('-hwaccel'))
+})
+
+test('args outside raw is an explicit error instead of a silent no-op', () => {
+  assert.throws(
+    () =>
+      buildFfmpegPlan(
+        { operation: 'encode', input: '/in.mp4', output: '/out.mp4', args: ['-vf', 'scale=640:360'] },
+        caps(['scale']),
+        defaultSettings(),
+        null,
+        0,
+      ),
+    /args is supported only for operation "raw"/,
+  )
+})
+
+test('copy codec with filters is rejected', () => {
+  assert.throws(
+    () =>
+      buildFfmpegPlan(
+        { operation: 'encode', input: '/in.mp4', output: '/out.mp4', codec: 'copy', vf: 'crop=100:100:0:0' },
+        caps(['scale']),
+        defaultSettings(),
+        null,
+        0,
+      ),
+    /filters cannot be used with codec "copy"/,
+  )
+})
+
+test('encode honours startSec and durationSec', () => {
+  const plan = buildFfmpegPlan(
+    { operation: 'encode', input: '/in.mp4', output: '/out.mp4', startSec: 300, durationSec: 10, overwrite: true },
+    caps(['scale']),
+    defaultSettings(),
+    null,
+    0,
+  )
+  const seek = plan.argv.indexOf('-ss')
+  const input = plan.argv.indexOf('-i')
+  const limit = plan.argv.indexOf('-t')
+  assert.ok(seek >= 0 && plan.argv[seek + 1] === '300', plan.argv.join(' '))
+  assert.ok(input > seek)
+  assert.ok(limit > input && plan.argv[limit + 1] === '10', plan.argv.join(' '))
+})
+
+test('frames combines fps with scale and vf', () => {
+  const plan = buildFfmpegPlan(
+    { operation: 'frames', input: '/in.mp4', outputDir: '/frames', fps: 1, scale: '960x540', vf: 'crop=100:100:0:0', overwrite: true },
+    caps(['scale']),
+    defaultSettings(),
+    null,
+    0,
+  )
+  const index = plan.argv.indexOf('-vf')
+  assert.equal(plan.argv[index + 1], 'fps=1,scale=960:540,crop=100:100:0:0')
+})
+
+test('ffmpeg diagnostics expose encoders, filters and hwaccels', () => {
+  const diagnostics = buildFfmpegDiagnostics(
+    {
+      path: '/ffmpeg-nvenc',
+      version: 'test',
+      encoders: ['hevc_nvenc', 'h264_nvenc', 'libx264', 'aac'],
+      decoders: [],
+      filters: ['scale_cuda', 'hwdownload', 'unsharp', 'cas', 'subtitles'],
+      hwaccels: ['cuda', 'cuvid'],
+    },
+    true,
+  )
+  assert.equal(diagnostics.gpu, true)
+  assert.equal(diagnostics.encoders.hevc_nvenc, true)
+  assert.equal(diagnostics.encoders.av1_nvenc, false)
+  assert.equal(diagnostics.filters.hwdownload, true)
+  assert.equal(diagnostics.filters.libplacebo, false)
+  assert.deepEqual(diagnostics.hwaccels, ['cuda', 'cuvid'])
 })

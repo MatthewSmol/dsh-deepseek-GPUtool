@@ -141,6 +141,26 @@ call history.
 - Tests: +5 (response parsing, multipart against a local server, the key never
   echoed, file limits) for 17 total.
 
+### 1.6.2 — 2026-11-24
+
+- **`vf` is no longer dropped**: the `vf` parameter (full filter chain) works in
+  `encode`, `trim`, `split`, `frames`, `thumb`; `scale` is joined with it. Root
+  cause: `args` was honoured only by `raw`, while `encode` silently ignored
+  `-vf` — now `args` outside `raw` fails with `args-raw-only`.
+- **GPU filters**: software filters (`scale`, `unsharp`, `crop`…) automatically
+  disable NVDEC decode (warning in job.warnings) while encoding stays NVENC.
+  Pure CUDA chains (`scale_cuda`, `libplacebo`) keep `-hwaccel cuda`.
+- **`encode`** now honours `startSec`/`durationSec` (`-ss` before input, `-t`
+  after) and `codec:"copy"` with filters fails with `filters-with-copy` instead
+  of silently dropping them.
+- **`frames`** applies `scale`/`vf` together with `fps` (`fps=1,scale=640:360`).
+- **`/api/state.ffmpeg`**: binary, NVENC/CPU encoders and filters availability
+  (`scale_cuda`, `hwdownload`, `unsharp`, `cas`, `subtitles`, `libplacebo`),
+  hwaccels; `job.warnings` is exposed in `/api/jobs` and the panel.
+- Verified on GPU: a 3 s 1280×720 clip with `vf:"scale=640:360"` produced
+  640×360, h264_nvenc, duration 3.000 s.
+- Tests: 54 Node (+8: vf/copy/seek/frames/diagnostics).
+
 ### 1.6.1 — 2026-11-24
 
 - **Queue watchdog**: child pids are tracked (`ctx.trackPid`); a dead process

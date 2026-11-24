@@ -75,6 +75,7 @@ export interface Job {
   pids?: number[]
   alive?: boolean
   stalled?: boolean
+  warnings?: string[]
 }
 
 export interface Call {
@@ -676,6 +677,10 @@ export function createPanel(ui: Ui): (props: any) => any {
           h('div', { className: 'gputool-kv' }, h('span', null, tr('jobs.device')), h('span', null, job.device.kind === 'gpu' ? `GPU ${job.device.index ?? 0}${job.device.name ? ` (${job.device.name})` : ''}` : tr('device.cpu'))),
           h('div', { className: 'gputool-kv' }, h('span', null, tr('history.duration')), h('span', null, fmtDuration(job.durationMs))),
           h(Progress, { job, tr }),
+          job.warnings?.length ? h('h4', null, tr('jobs.warnings')) : null,
+          job.warnings?.length
+            ? h('pre', { className: 'gputool-pre gputool-pre-error' }, job.warnings.join('\n'))
+            : null,
           h('h4', null, tr('jobs.argv')),
           h('pre', { className: 'gputool-pre' }, job.argv.join(' ')),
           job.outputs.length ? h('h4', null, tr('jobs.outputs')) : null,

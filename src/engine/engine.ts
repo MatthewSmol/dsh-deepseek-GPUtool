@@ -10,6 +10,7 @@ import type {
   GpuStatus,
   DoctorReport,
   FfmpegCaps,
+  FfmpegDiagnostics,
   JobContext,
   JobOutput,
   JobRecord,
@@ -58,7 +59,20 @@ import {
 } from './upscale-rust.js'
 import { run, stream } from './proc.js'
 
-export const VERSION = '1.6.1'
+export const VERSION = '1.6.2'
+
+/** Диагностика ffmpeg для /api/state: что реально доступно в бинаре. */
+export function buildFfmpegDiagnostics(caps: FfmpegCaps, gpu: boolean): FfmpegDiagnostics {
+  const flags = (list: string[], names: string[]): Record<string, boolean> =>
+    Object.fromEntries(names.map((name) => [name, list.includes(name)]))
+  return {
+    binary: caps.path,
+    gpu,
+    encoders: flags(caps.encoders, ['h264_nvenc', 'hevc_nvenc', 'av1_nvenc', 'libx264', 'libx265', 'aac']),
+    filters: flags(caps.filters, ['scale_cuda', 'hwdownload', 'hwupload', 'unsharp', 'cas', 'subtitles', 'ass', 'libplacebo']),
+    hwaccels: caps.hwaccels,
+  }
+}
 
 /** Приводит device к auto|cpu|number; numeric-string допустим ("1" → 1). */
 export function normalizeDeviceParam(requested: unknown): 'auto' | 'cpu' | number | undefined {
@@ -274,6 +288,9 @@ export class Engine {
   async state(): Promise<ServerState> {
     const [gpu, doctor] = await Promise.all([this.gpu(), this.doctorReport(false)])
     const settings = this.settingsStore.get()
+    const gpuCaps = await this.caps(true).catch(() => null)
+    const cpuCaps = gpuCaps ?? (await this.caps(false).catch(() => null))
+    const ffmpeg = cpuCaps ? buildFfmpegDiagnostics(cpuCaps, Boolean(gpuCaps)) : undefined
     const deepseekKey = await this.deepseekKey(settings).catch(() => '')
     return {
       version: VERSION,
@@ -302,6 +319,7 @@ export class Engine {
           rust: rustFaceAvailable(settings),
         },
       },
+      ffmpeg,
     }
   }
 
@@ -471,6 +489,7 @@ export class Engine {
         }
         ctx.job.argv = plan.argv
         ctx.job.engine = plan.binary
+        ctx.job.warnings = [...plan.warnings]
         for (const warning of plan.warnings) ctx.log(`warning: ${warning}`)
         ctx.log(`argv: ${plan.argv.join(' ')}`)
         if (plan.concatList) {

@@ -181,6 +181,8 @@ export interface JobRecord {
   hintId: string | null
   /** pid дочерних процессов задания (для watchdog и жёсткой отмены). */
   pids?: number[]
+  /** Предупреждения плана (фильтры, фолбэки энкодера). */
+  warnings?: string[]
   /** Жив ли ещё процесс running-задания (вычисляется при выдаче). */
   alive?: boolean
   /** Нет прогресса дольше порога (вычисляется при выдаче). */
@@ -244,6 +246,15 @@ export interface ServerState {
   calls: CallRecord[]
   settings: Omit<Settings, 'apiToken'>
   capabilities?: { ocr: OcrCapability; face: FaceCapability }
+  ffmpeg?: FfmpegDiagnostics
+}
+
+export interface FfmpegDiagnostics {
+  binary: string
+  gpu: boolean
+  encoders: Record<string, boolean>
+  filters: Record<string, boolean>
+  hwaccels: string[]
 }
 
 export interface JobContext {

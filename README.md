@@ -39,6 +39,8 @@ npm run test:rust    # Rust-тесты воркеров
   разблокировать очередь.
 - `POST /api/admin/restart` — перезапустить MCP-процесс сервиса (DSH поднимет
   его снова). Зависшие running-задания при старте помечаются `interrupted`.
+- `GET /api/state` → блок `ffmpeg` (NVENC/фильтры/hwaccels) и `job.warnings`
+  c предупреждениями плана.
 
 ## История изменений
 
@@ -142,6 +144,27 @@ npm run test:rust    # Rust-тесты воркеров
   `deepseekTimeoutMs` (170 с — лимит API 180 с).
 - Тесты: +5 (разбор ответа, multipart на локальный сервер, отсутствие ключа в
   тексте ошибки, лимиты файла) — всего 17.
+
+### 1.6.2 — 2026-11-24
+
+- **`vf` больше не теряется**: параметр `vf` (полная цепочка фильтров) работает в
+  `encode`, `trim`, `split`, `frames`, `thumb`; `scale` склеивается с ним через
+  запятую. Причина бага: `args` учитывался только в `raw`, а `encode` молча
+  игнорировал `-vf` — теперь `args` вне `raw` даёт ошибку `args-raw-only`.
+- **GPU-фильтры**: для программных фильтров (`scale`, `unsharp`, `crop`…)
+  NVDEC-декод отключается автоматически (предупреждение в job.warnings),
+  энкодинг остаётся NVENC. Чисто CUDA-цепочки (`scale_cuda`, `libplacebo`)
+  сохраняют `-hwaccel cuda`.
+- **`encode`** теперь учитывает `startSec`/`durationSec` (`-ss` до входа,
+  `-t` после), а `codec:"copy"` с фильтрами падает с `filters-with-copy`
+  вместо тихой потери фильтра.
+- **`frames`** применяет `scale`/`vf` вместе с `fps` (`fps=1,scale=640:360`).
+- **`/api/state.ffmpeg`**: бинарь, доступность NVENC/CPU-энкодеров и фильтров
+  (`scale_cuda`, `hwdownload`, `unsharp`, `cas`, `subtitles`, `libplacebo`),
+  hwaccels; `job.warnings` отдаётся в `/api/jobs` и панели.
+- Проверено на GPU: 3-секундный клип 1280×720 → `vf:"scale=640:360"` дал
+  640×360, h264_nvenc, длительность 3.000 с.
+- Тесты: 54 Node (+8: vf/copy/seek/frames/diagnostics).
 
 ### 1.6.1 — 2026-11-24
 
@@ -432,6 +455,9 @@ python scripts/export_span2x_onnx.py \
 ## Сырые аргументы ffmpeg
 
 У `encode` есть `cq` (0–51): переопределяет `-cq` NVENC / `-crf` CPU-пресета.
+Фильтры задаются `vf` (например `"scale=640:360,unsharp=5:5:0.5"`) или `scale`;
+`args` допустим только для `raw`. Программные фильтры отключают NVDEC-декод
+(энкод остаётся NVENC), чисто CUDA-цепочки (`scale_cuda`) сохраняют `-hwaccel cuda`.
 `frames` учитывает `startSec`/`durationSec`: `-ss` ставится перед входом, `-t` —
 после, поэтому «10 секунд с 300-й» действительно начинаются с 300-й.
 

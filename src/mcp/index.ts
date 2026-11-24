@@ -185,6 +185,7 @@ mcp.registerTool(
       quality: z.enum(['fast', 'balanced', 'quality']).optional(),
       cq: z.number().optional().describe('Override NVENC -cq / CPU -crf (0–51)'),
       scale: z.string().optional(),
+      vf: z.string().optional().describe('Full video filter chain, e.g. "scale=640:360,unsharp=5:5:0.5" (GPU decode wraps hwdownload automatically)'),
       fps: z.number().optional(),
       audio: z.enum(['copy', 'aac', 'none']).optional(),
       startSec: z.number().optional(),
@@ -197,7 +198,7 @@ mcp.registerTool(
       overwrite: z.boolean().optional(),
       device: deviceSchema.optional(),
       hwaccel: z.enum(['off', 'auto', 'cuvid']).optional(),
-      args: z.array(z.string()).optional(),
+      args: z.array(z.string()).optional().describe('Raw ffmpeg argv; only for operation "raw" (use vf for filters)'),
       progress: z.boolean().optional(),
       montage: z
         .object({
@@ -462,7 +463,7 @@ mcp.registerTool(
       'Progress lines like "progress: 42%" are mirrored into the job progress.',
     inputSchema: z.object({
       script: z.string(),
-      args: z.array(z.string()).optional(),
+      args: z.array(z.string()).optional().describe('Raw ffmpeg argv; only for operation "raw" (use vf for filters)'),
       cwd: z.string().optional(),
       env: z.record(z.string(), z.string()).optional(),
       device: deviceSchema.optional(),
