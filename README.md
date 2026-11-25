@@ -3,7 +3,7 @@
 [English](README.en.md) | Русский
 
 DSH-плагин и локальный MCP-сервис для общей GPU-работы: ffmpeg NVDEC/NVENC,
-ONNX Runtime CUDA (YuNet/SFace, BlurBall, SPAN x2), OCR (DeepSeek → PP-OCRv5),
+ONNX Runtime CUDA (YuNet/SFace, TrackNetV2/V3, BlurBall, WASB, SPAN x2), OCR (DeepSeek → PP-OCRv5),
 YOLO11, трекинг мяча и GPU-скрипты. У каждой задачи есть живой прогресс
 (процент, ETA, fps), а история вызовов хранит, какая сессия её запустила и
 сколько времени это заняло.
@@ -12,14 +12,16 @@ YOLO11, трекинг мяча и GPU-скрипты. У каждой зада�
 - Панель: левый сайдбар → GPU tool (Обзор / Задачи / История / Аренда / Настройки)
 - Язык интерфейса: **русский по умолчанию**, английский — переключателем RU / EN в шапке панели
 - HTTP API: `/gputool/api/*` (loopback, защищён токеном)
-- Апскейл **x2 (SPAN fp16)** строго на CUDA: батчи, NVDEC/NVENC, без тайлинга и без CPU-фолбэка
-- Трекинг мяча настольного тенниса: **BlurBall** (ONNX, CUDA) → координаты и видео с точкой
-- Модели на диске: `$DSH_HOME/gputool/models/ball/blurball_tt.onnx` (мяч) и
-  `$DSH_HOME/gputool/models/upscale/span2x_ch48_fp16.onnx` (апскейл x2); путь
-  меняется в настройках (`ballModelPath`, `upscaleModelPath`)
+- Апскейл **x2 (SPAN fp16)**: CUDA или TensorRT (fp16, кэш engine), батчи,
+  NVDEC/NVENC, без тайлинга и без CPU-фолбэка
+- Трекинг мяча: **TrackNetV2/V3** (включая concat-фон на видео), **BlurBall**, **WASB**;
+  раскладка входа определяется автоматически по ONNX → координаты и видео с точкой
+- Модели на диске: `$DSH_HOME/gputool/models/ball/{blurball_tt,tracknetv3_badminton,wasb_tennis}.onnx`
+  (мяч) и `$DSH_HOME/gputool/models/upscale/span2x_ch48_fp16.onnx` (апскейл x2);
+  путь меняется в настройках (`ballModelPath`, `upscaleModelPath`) или параметром `model`
 - Установка окружения: `mcp__gputool__setup` → `install-runtime` (torch CUDA, onnxruntime-gpu, ultralytics, lap)
 
-Подробности — в [docs/DETAIL.md](docs/DETAIL.md).
+Текущая версия — **1.7.4**. Подробности — в [docs/DETAIL.md](docs/DETAIL.md).
 
 ```bash
 npm install --cache ./.npm-cache
@@ -444,32 +446,99 @@ npm run test:rust    # Rust-тесты воркеров
 проще `mcp__gputool__ffmpeg` (`encode`/`raw`) — он сам добавляет
 `-progress pipe:1` и даёт проценты, ETA и fps.
 
-## Трекинг мяча (TrackNet / WASB, ONNX)
+## Трекинг мяча (TrackNetV2/V3, BlurBall, WASB, ONNX)
 
 ```json
 {
   "source": "/video/match.mp4",
-  "model": "/models/ball/tracknetv2.onnx",
-  "fps": 30, "threshold": 0.5, "annotate": true,
+  "model": "/models/ball/tracknetv3_badminton.onnx",
+  "bgMode": "concat",
+  "backgroundSamples": 32,
+  "threshold": 0.5, "annotate": true,
   "outputDir": "/out/ball"
 }
 ```
 
-Инструмент рассчитан на ONNX-модели семейства TrackNetV2/V3 и WASB-SBDT:
-`[1, frames*3, H, W]` (обычно 1×9×288×512) → heatmap `[1, 1, H, W]`. Экспорт из
-PyTorch (opset 18; ORT 1.32 его понимает):
+Раскладку входа воркер определяет по самой ONNX-модели: из входа берётся число
+каналов `C` и размер `H×W`, из выхода — `L` (число heatmap). Дальше
+`frames = L`, а режим выбирается по `C`:
+
+| Каналов `C` | Режим | Что подаётся |
+| --- | --- | --- |
+| `L*3` | обычные кадры | `[кадры…]` |
+| `(L+1)*3` | `concat` | `[фон, кадры…]` |
+| `L` | `subtract` | покадровая разница с фоном |
+| `L*4` | `subtract_concat` | RGB кадра + разница |
+
+Поэтому `frames` и `bgMode` можно не указывать: при неоднозначности приоритет
+у запрошенного `bgMode`, затем у `concat`. Явные `inputWidth`/`inputHeight`
+переопределяют размеры из модели; при динамической форме воркер перебирает
+`frames = 1..=8`. TrackNetV3 (`[1,27,288,512]` → `[1,8,288,512]`) запускается
+как есть, без `frames=8`.
+
+### Фон для `bgMode=concat` на видео
+
+Фон нужен, когда каналов `(frames+1)*3`. Воркер берёт первые
+`backgroundSamples` кадров диапазона задания (по умолчанию 32) и считает
+**попиксельную медиану** — как `np.median` в официальном TrackNetV3. Вместо неё
+можно передать готовую картинку:
+
+```json
+{ "bgMode": "concat", "background": "/video/empty_court.png" }
+```
+
+Кадры фона затем участвуют в инференсе (окно из `frames` кадров, последняя
+heatmap соответствует текущему кадру). `subtract`/`subtract_concat` на видео
+пока не поддерживаются — только для набора картинок.
+
+### Выбор heatmap
+
+TrackNetV3 отдаёт `L` heatmap на окно. По умолчанию берётся последняя (самый
+новый кадр), `outputIndex` переопределяет выбор; временного ансамбля
+оригинального репозитория нет — это осознанное упрощение. Число heatmap
+возвращается в результате (`heatmaps`).
+
+Если раскладка не подошла, ошибка содержит форму входа/выхода и dtype, список
+опробованных `(frames, channels, layout)` и реальный текст ONNX Runtime:
+
+```text
+model-layout-unsupported: input [1, 27, 288, 512] Float32, output [1, 8, 288, 512];
+tried: [(3,9,""), (8,27,"concat"), …]; last ORT error: Got: 28 Expected: 27
+```
+
+### Как подключить модель
+
+ONNX-модель задаётся `ballModelPath`, `GPUTOOL_BALL_MODEL` или параметром
+`model`; в git веса не входят. Общий экспорт (opset 18, ORT 1.32):
 
 ```python
 torch.onnx.export(model, torch.zeros(1, 9, 288, 512), "tracknetv2.onnx",
                   opset_version=18, input_names=["input"], output_names=["output"])
 ```
 
-Веса: [TrackNetV2 (PyTorch)](https://github.com/yastrebksv/TrackNet),
-[TrackNetV3](https://github.com/qaz812345/TrackNetV3) (нужна ветка TrackNet),
-[WASB-SBDT](https://github.com/nttcom/WASB-SBDT) (теннисные веса MIT). Модель
-подключается путём `ballModelPath` или `GPUTOOL_BALL_MODEL`, в git не входит.
+Скрипты для всех поддерживаемых семейств лежат в `scripts/`:
+[TrackNetV2](https://github.com/yastrebksv/TrackNet),
+[TrackNetV3](https://github.com/qaz812345/TrackNetV3),
+[WASB-SBDT](https://github.com/nttcom/WASB-SBDT), BlurBall.
 
-### Готовые веса BlurBall (настольный теннис) — рекомендуемый путь
+#### TrackNetV3 (официальные веса)
+
+```bash
+git clone --depth 1 https://github.com/qaz812345/TrackNetV3 ~/.cache/gputool/tracknetv3
+
+python scripts/export_tracknetv3_onnx.py \
+  --repo ~/.cache/gputool/tracknetv3 \
+  --weights ~/.dsh/gputool/models/ball/ckpts/TrackNet_best.pt \
+  --output ~/.dsh/gputool/models/ball/tracknetv3_badminton.onnx
+# вход [1,27,288,512] (фон + 8 кадров), выход [1,8,288,512]
+```
+
+Официальные веса обучены на бадминтоне: на настольном теннисе они находят мяч
+частично (68/250 кадров на 10-секундном ROI против 112/250 у BlurBall), поэтому
+для настольного тенниса по-прежнему рекомендуются BlurBall или TT-веса
+(`wasn-lab/TrackNetV3_TableTennis` — веса лежат в закрытом OneDrive).
+
+#### BlurBall (настольный теннис) — рекомендуемый путь
 
 BlurBall — форк WASB-SBDT для настольного тенниса, веса лежат прямо в
 репозитории (MIT), F1 видео-инференса 0.959 по метаданным чекпойнта:
@@ -511,9 +580,13 @@ sigmoid и нормализацию (`normalize: auto`, срабатывает �
 можно указать `normalize: none` и `sigmoid: false`.
 
 Выход: `ball.jsonl` + `ball.csv` (frame/time/visible/x/y/conf), `ball.ass` и
-`ball.mp4` с точкой; `annotate:false` — только координаты.
+`ball.mp4` с точкой; `annotate:false` — только координаты. В результате есть
+`heatmaps` (число выходных каналов модели).
 
-## Апскейл x2 (SPAN, только GPU)
+Для одной картинки (или 1–8 кадров) — `mcp__gputool__ball_image`: тот же
+воркер на статичных изображениях, пишет `ball_image.json` и PNG с меткой.
+
+## Апскейл x2 (SPAN, CUDA/TensorRT)
 
 ```json
 {
@@ -525,9 +598,11 @@ sigmoid и нормализацию (`normalize: auto`, срабатывает �
 }
 ```
 
-- Модель — **SPAN x2 fp16** (`span2x_ch48_fp16.onnx`, 835 КБ), инференс строго
-  на CUDA: сессия создаётся с `disable_cpu_ep_fallback`, при недоступной CUDA
-  задание падает (`cuda-unavailable`), CPU-режима нет.
+- Модель — **SPAN x2 fp16** (`span2x_ch48_fp16.onnx`, 835 КБ). Провайдер:
+  `provider = auto | cuda | tensorrt` (по умолчанию auto: TensorRT, при
+  недоступности — CUDA). CPU-фолбэка нет: при недоступных провайдерах задание
+  падает (`cuda-unavailable`/`tensorrt-unavailable`). TensorRT держит engine-кэш
+  в `models/upscale/trt-cache` (первая сборка ≈54 с).
 - Кадры идут **батчами** (`batch`, 1–64, по умолчанию 8), тайлинга нет
   (`tile=0`; любой тайл — ошибка `tiling-not-supported`).
 - Видео: NVDEC-декод → батч CUDA → NVENC (`hevc_nvenc`/`h264_nvenc`), аудио
@@ -535,8 +610,8 @@ sigmoid и нормализацию (`normalize: auto`, срабатывает �
   видно в метриках `decodeMsPerFrame`/`encodeMsPerFrame`).
 - Точное разрешение: `width`/`height` (например `1280×720`) — кадр заранее
   масштабируется в `target/2`, затем x2 даёт ровно целевой размер.
-- Скорость на RTX 3070, 512×288→1024×576, batch 8: **32.3 fps** (инференс
-  25 мс/кадр); 2000 кадров — 65.7 с; 25 925 кадров (13 чанков) — ~14.2 мин.
+- Скорость на RTX 3070, 16 кадров 512×288, batch 8: CUDA **25.8 fps**
+  (32.6 мс/кадр), TensorRT с тёплым кэшем **43.9 fps** (16.4 мс/кадр).
 
 Модель экспортируется из официальных весов SPAN (Apache-2.0):
 
@@ -610,6 +685,11 @@ python scripts/export_span2x_onnx.py \
 
 ### Планы
 
+- TT-веса TrackNetV3 (`wasn-lab/TrackNetV3_TableTennis`, закрытый OneDrive) для
+  точного трекинга: официальные бадминтонные веса дают лишь частичную детекцию.
+- `subtract`/`subtract_concat` на видео — если появятся TT-веса с такой
+  раскладкой.
+- Временной ансамбль heatmap, как в оригинальном TrackNetV3 (опционально).
 - Rust-воркеры для внутренних стадий (детекция, OCR-постобработка, трекинг) —
   см. `AGENTS.md`.
 - Словарь PP-OCRv5 и профиль области табло по умолчанию.

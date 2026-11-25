@@ -3,7 +3,7 @@
 English | [Русский](README.md)
 
 A DSH plugin and local MCP service for shared GPU work: ffmpeg NVDEC/NVENC,
-ONNX Runtime CUDA (YuNet/SFace, BlurBall, SPAN x2), OCR (DeepSeek → PP-OCRv5),
+ONNX Runtime CUDA (YuNet/SFace, TrackNetV2/V3, BlurBall, WASB, SPAN x2), OCR (DeepSeek → PP-OCRv5),
 YOLO11, ball tracking and GPU scripts. Every job has live progress (percent,
 ETA, fps), and the call history records which session started it and how long
 it took.
@@ -12,14 +12,16 @@ it took.
 - Panel: left sidebar → GPU tool (Overview / Jobs / History / Leases / Settings)
 - Interface language: **Russian by default**, English via the RU / EN switch in the panel header
 - HTTP API: `/gputool/api/*` (loopback, token protected)
-- **x2 upscaling (SPAN fp16)** strictly on CUDA: batching, NVDEC/NVENC, no tiling, no CPU fallback
-- Table tennis ball tracking: **BlurBall** (ONNX, CUDA) → coordinates and a video with the dot
-- On-disk models: `$DSH_HOME/gputool/models/ball/blurball_tt.onnx` (ball) and
-  `$DSH_HOME/gputool/models/upscale/span2x_ch48_fp16.onnx` (x2 upscale); override
-  via `ballModelPath` / `upscaleModelPath`
+- **x2 upscaling (SPAN fp16)**: CUDA or TensorRT (fp16, engine cache), batching,
+  NVDEC/NVENC, no tiling, no CPU fallback
+- Ball tracking: **TrackNetV2/V3** (including concat background on video), **BlurBall**,
+  **WASB**; the input layout is detected from the ONNX model → coordinates and a video with the dot
+- On-disk models: `$DSH_HOME/gputool/models/ball/{blurball_tt,tracknetv3_badminton,wasb_tennis}.onnx`
+  (ball) and `$DSH_HOME/gputool/models/upscale/span2x_ch48_fp16.onnx` (x2 upscale);
+  override via `ballModelPath` / `upscaleModelPath` or the `model` parameter
 - Runtime setup: `mcp__gputool__setup` → `install-runtime` (torch CUDA, onnxruntime-gpu, ultralytics, lap)
 
-Details: [docs/DETAIL.md](docs/DETAIL.md).
+Current version: **1.7.4**. Details: [docs/DETAIL.md](docs/DETAIL.md).
 
 ```bash
 npm install --cache ./.npm-cache
@@ -443,18 +445,99 @@ result, there is no progress: gputool never sees the inner output. For final
 encodes prefer `mcp__gputool__ffmpeg` (`encode`/`raw`) — it injects
 `-progress pipe:1` and provides percent, ETA and fps.
 
-## Ball tracking (TrackNet / WASB, ONNX)
+## Ball tracking (TrackNetV2/V3, BlurBall, WASB, ONNX)
 
 ```json
 {
   "source": "/video/match.mp4",
-  "model": "/models/ball/tracknetv2.onnx",
-  "fps": 30, "threshold": 0.5, "annotate": true,
+  "model": "/models/ball/tracknetv3_badminton.onnx",
+  "bgMode": "concat",
+  "backgroundSamples": 32,
+  "threshold": 0.5, "annotate": true,
   "outputDir": "/out/ball"
 }
 ```
 
-### Ready BlurBall (table tennis) weights — recommended
+The worker derives the input layout from the ONNX model itself: the input gives
+the channel count `C` and `H×W`, the output gives `L` (number of heatmaps). Then
+`frames = L` and the mode follows from `C`:
+
+| Channels `C` | Mode | Input |
+| --- | --- | --- |
+| `L*3` | plain frames | `[frames…]` |
+| `(L+1)*3` | `concat` | `[background, frames…]` |
+| `L` | `subtract` | per-frame difference to the background |
+| `L*4` | `subtract_concat` | frame RGB + difference |
+
+So `frames` and `bgMode` may be omitted: on ambiguity the requested `bgMode`
+wins, then `concat`. Explicit `inputWidth`/`inputHeight` override the model
+sizes; if the shape is dynamic the worker probes `frames = 1..=8`. TrackNetV3
+(`[1,27,288,512]` → `[1,8,288,512]`) runs as is, without `frames=8`.
+
+### Background for `bgMode=concat` on video
+
+A background is needed when the channel count is `(frames+1)*3`. The worker
+takes the first `backgroundSamples` frames of the job range (default 32) and
+computes a **per-pixel median** — the same idea as `np.median` in the official
+TrackNetV3. Alternatively pass a ready image:
+
+```json
+{ "bgMode": "concat", "background": "/video/empty_court.png" }
+```
+
+Those frames then take part in inference (a window of `frames` frames; the
+last heatmap corresponds to the current frame). `subtract`/`subtract_concat` are not
+supported on video yet — still images only.
+
+### Heatmap selection
+
+TrackNetV3 returns `L` heatmaps per window. The last one (the newest frame) is
+used by default and `outputIndex` overrides it; the original repository's
+temporal ensemble is not implemented (a deliberate simplification). The number
+of heatmaps is returned as `heatmaps`.
+
+When no layout fits, the error reports the input/output shapes and dtype, the
+list of tried `(frames, channels, layout)` candidates and the real ONNX Runtime
+error:
+
+```text
+model-layout-unsupported: input [1, 27, 288, 512] Float32, output [1, 8, 288, 512];
+tried: [(3,9,""), (8,27,"concat"), …]; last ORT error: Got: 28 Expected: 27
+```
+
+### Attaching a model
+
+The ONNX file comes from `ballModelPath`, `GPUTOOL_BALL_MODEL` or the `model`
+parameter; weights are not stored in git. Generic export (opset 18, ORT 1.32):
+
+```python
+torch.onnx.export(model, torch.zeros(1, 9, 288, 512), "tracknetv2.onnx",
+                  opset_version=18, input_names=["input"], output_names=["output"])
+```
+
+Export scripts for every supported family live in `scripts/`:
+[TrackNetV2](https://github.com/yastrebksv/TrackNet),
+[TrackNetV3](https://github.com/qaz812345/TrackNetV3),
+[WASB-SBDT](https://github.com/nttcom/WASB-SBDT), BlurBall.
+
+#### TrackNetV3 (official weights)
+
+```bash
+git clone --depth 1 https://github.com/qaz812345/TrackNetV3 ~/.cache/gputool/tracknetv3
+
+python scripts/export_tracknetv3_onnx.py \
+  --repo ~/.cache/gputool/tracknetv3 \
+  --weights ~/.dsh/gputool/models/ball/ckpts/TrackNet_best.pt \
+  --output ~/.dsh/gputool/models/ball/tracknetv3_badminton.onnx
+# input [1,27,288,512] (background + 8 frames), output [1,8,288,512]
+```
+
+The official weights are trained on badminton: on table tennis they find the
+ball only partially (68/250 frames over a 10 s ROI versus 112/250 for BlurBall),
+so BlurBall or proper TT weights remain the recommendation for table tennis
+(`wasn-lab/TrackNetV3_TableTennis`, weights live behind a closed OneDrive).
+
+#### BlurBall (table tennis) — recommended
 
 BlurBall is a WASB-SBDT fork for table tennis; weights are in the repository
 (MIT), checkpoint video-inference F1 is 0.959:
@@ -486,14 +569,15 @@ both automatically (`normalize: auto` matches the `wasb` filename) and takes the
 last output channel (`outputIndex`). Other models can use `normalize: none` and
 `sigmoid: false`.
 
-The tool targets ONNX models from the TrackNetV2/V3 and WASB-SBDT families:
-`[1, frames*3, H, W]` (usually 1×9×288×512) → heatmap `[1, 1, H, W]`. Export from PyTorch (opset 18; ORT 1.32 supports it) as shown above. Weights:
-[TrackNetV2](https://github.com/yastrebksv/TrackNet),
-[TrackNetV3](https://github.com/qaz812345/TrackNetV3) (TrackNet branch),
-[WASB-SBDT](https://github.com/nttcom/WASB-SBDT). Point `ballModelPath` or
-`GPUTOOL_BALL_MODEL` at the exported file.
+The outputs are `ball.jsonl` + `ball.csv` (frame/time/visible/x/y/conf), `ball.ass`
+and `ball.mp4` with the dot; `annotate:false` keeps coordinates only. The result
+also reports `heatmaps` (the model's output channel count).
 
-## x2 upscale (SPAN, GPU only)
+For a single image (or 1–8 frames) use `mcp__gputool__ball_image`: the same
+worker runs on still images and writes `ball_image.json` plus a PNG with the
+marker.
+
+## x2 upscale (SPAN, CUDA/TensorRT)
 
 ```json
 {
@@ -504,17 +588,19 @@ The tool targets ONNX models from the TrackNetV2/V3 and WASB-SBDT families:
 }
 ```
 
-- Model — **SPAN x2 fp16** (`span2x_ch48_fp16.onnx`, 835 KB); inference strictly
-  on CUDA (`disable_cpu_ep_fallback`); without CUDA the job fails with
-  `cuda-unavailable` — there is no CPU mode.
+- Model — **SPAN x2 fp16** (`span2x_ch48_fp16.onnx`, 835 KB). Providers:
+  `provider = auto | cuda | tensorrt` (auto tries TensorRT, then CUDA); there is
+  no CPU mode, so without them the job fails (`cuda-unavailable` /
+  `tensorrt-unavailable`). TensorRT keeps its engine cache in
+  `models/upscale/trt-cache` (first build ≈54 s).
 - Frames are **batched** (`batch`, 1–64, default 8); no tiling (`tile=0`, any
   tile value fails with `tiling-not-supported`).
 - Video: NVDEC → CUDA batch → NVENC (`hevc_nvenc`/`h264_nvenc`), audio copied.
   PNG directories work too (PNG decode/encode is CPU, reported separately).
 - Exact target resolution: `width`/`height` (e.g. `1280×720`) — the frame is
   pre-scaled to `target/2`, then x2 produces exactly the requested size.
-- Speed on RTX 3070, 512×288→1024×576, batch 8: **32.3 fps** (24.1 ms/frame
-  inference); 2000 frames in 61.8 s; 25,925 frames (13 chunks) ~13.4 min.
+- Speed on RTX 3070, 16 frames at 512×288, batch 8: CUDA **25.8 fps**
+  (32.6 ms/frame), TensorRT with a warm cache **43.9 fps** (16.4 ms/frame).
 
 Export from the official SPAN weights (Apache-2.0):
 
@@ -555,6 +641,10 @@ order is scenes → overlays → audio, so voice tracks stay independent.
 
 ### Planned
 
+- TrackNetV3 TT weights (`wasn-lab/TrackNetV3_TableTennis`, closed OneDrive) for
+  accurate tracking: the official badminton weights detect only partially.
+- `subtract`/`subtract_concat` on video — if TT weights with that layout appear.
+- The original TrackNetV3 temporal heatmap ensemble (optional).
 - Rust workers for internal stages (detection, OCR post-processing, tracking) —
   see `AGENTS.md`.
 - A PP-OCRv5 dictionary and a default scoreboard region.
