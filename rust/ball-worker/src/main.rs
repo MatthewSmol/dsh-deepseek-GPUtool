@@ -76,6 +76,12 @@ struct Config {
     /// Раскладка входа: "" (кадры), concat (кадры+фон), subtract, subtract_concat.
     #[serde(default)]
     bg_mode: Option<String>,
+    /// Готовая картинка-фон для `bg_mode=concat` на видео.
+    #[serde(default)]
+    background: Option<String>,
+    /// Сколько первых кадров усреднять в медианный фон (8–128, по умолчанию 32).
+    #[serde(default)]
+    background_samples: Option<usize>,
 }
 
 impl Config {
@@ -129,6 +135,14 @@ impl Config {
     }
     fn bg_mode(&self) -> &str {
         self.bg_mode.as_deref().unwrap_or("")
+    }
+    /// Путь к готовому фону (пустая строка = авто).
+    fn background(&self) -> Option<&str> {
+        self.background.as_deref().filter(|value| !value.is_empty())
+    }
+    /// Число кадров для медианного фона: 8–128, по умолчанию 32.
+    fn background_samples(&self) -> usize {
+        self.background_samples.unwrap_or(32).clamp(8, 128)
     }
     /// Число входных каналов под выбранную раскладку и число кадров.
     fn channels(&self, frames: usize) -> usize {
@@ -266,6 +280,14 @@ struct Model {
 }
 
 impl Model {
+    /// Нормализация входа, если заданы и mean, и std.
+    fn normalization(&self) -> Option<([f32; 3], [f32; 3])> {
+        match (self.mean, self.std) {
+            (Some(mean), Some(std)) => Some((mean, std)),
+            _ => None,
+        }
+    }
+
     fn load(config: &Config) -> Result<Self> {
         let path = Path::new(&config.model);
         if !path.is_file() {
@@ -447,6 +469,52 @@ impl Resizer {
             }
         }
         planes
+    }
+}
+
+// ------------------------------------------------------------------ фон и тензор
+
+/// Попиксельная медиана по кадрам — фон для `bg_mode=concat` на видео.
+///
+/// В официальном TrackNetV3 фон считается `np.median` по кадрам клипа; здесь —
+/// по первым кадрам диапазона, которые всё равно декодируются, без второго
+/// прохода ffmpeg. Для статичной камеры (настольный теннис) результат тот же.
+fn median_frame(frames: &[Vec<u8>], bytes: usize) -> Vec<u8> {
+    let mut out = vec![0u8; bytes];
+    let mut column: Vec<u8> = Vec::with_capacity(frames.len());
+    for index in 0..bytes {
+        column.clear();
+        column.extend(frames.iter().map(|frame| frame[index]));
+        column.sort_unstable();
+        let mid = column.len() / 2;
+        out[index] = if column.len() % 2 == 1 {
+            column[mid]
+        } else {
+            ((column[mid - 1] as u16 + column[mid] as u16) / 2) as u8
+        };
+    }
+    out
+}
+
+/// Копирует планarные каналы (0..1) в тензор с нормализацией модели.
+fn copy_planes(
+    src: &[f32],
+    plane: usize,
+    normalization: Option<([f32; 3], [f32; 3])>,
+    out: &mut [f32],
+    offset: usize,
+) {
+    for channel in 0..3 {
+        let from = channel * plane;
+        let to = offset + channel * plane;
+        match normalization {
+            Some((mean, std)) => {
+                for index in 0..plane {
+                    out[to + index] = (src[from + index] - mean[channel]) / std[channel];
+                }
+            }
+            None => out[to..to + plane].copy_from_slice(&src[from..from + plane]),
+        }
     }
 }
 
@@ -833,11 +901,13 @@ fn run_job(job: &str, config: &Config, model: &mut Option<Model>) -> Result<Valu
     }
     let engine = model.as_mut().expect("model");
     let is_image = config.images.is_some() || is_image_path(source);
-    // Модели с фоном (concat и т.п.) — только для статичных кадров: это ограничение
-    // самого воркера, а не конкретного файла модели.
-    if !is_image && engine.channels != engine.frames * 3 {
+    let plain_frames = engine.channels == engine.frames * 3;
+    let concat = engine.bg_mode == "concat" && engine.channels == (engine.frames + 1) * 3;
+    // На видео поддержаны обычные кадры и concat (кадры + медианный фон).
+    // subtract/subtract_concat остаются только для статичных изображений.
+    if !is_image && !plain_frames && !concat {
         return Err(anyhow!(
-            "model-layout-unsupported: bg_mode={} channels={} is supported for images only",
+            "model-layout-unsupported: bg_mode={} channels={} on video is not supported (concat only)",
             engine.bg_mode,
             engine.channels
         ));
@@ -890,20 +960,69 @@ fn run_job(job: &str, config: &Config, model: &mut Option<Model>) -> Result<Valu
     let plane = engine.width as usize * engine.height as usize;
     let mut raw = vec![0u8; frame_bytes];
     let mut buffer: Vec<Vec<f32>> = Vec::with_capacity(engine.frames);
-    let channels = engine.frames * 3;
-    let mut tensor = vec![0f32; channels * plane];
+
+    // concat: фон — медиана первых кадров диапазона (как np.median в оригинале)
+    // либо готовая картинка из `background`. Кадры фона затем идут в инференс.
+    let mut initial: Vec<Vec<u8>> = Vec::new();
+    let mut background_log: Option<String> = None;
+    let mut bg_planes: Option<Vec<f32>> = None;
+    if concat {
+        if let Some(path) = config.background() {
+            let (image_w, image_h, rgb) = load_image(Path::new(path))?;
+            let image_resizer = Resizer::new(image_w as usize, image_h as usize, engine.width, engine.height);
+            let mut planes = vec![0f32; plane * 3];
+            copy_planes(&image_resizer.resize(&rgb), plane, engine.normalization(), &mut planes, 0);
+            bg_planes = Some(planes);
+            background_log = Some(format!("image {path}"));
+        } else {
+            // 384 МБ на буфер фона: при 1080p это ~60 кадров, при 640×360 — 128.
+            let capacity = (384 * 1024 * 1024 / frame_bytes.max(1)).clamp(8, 128);
+            let samples = config.background_samples().min(capacity);
+            for _ in 0..samples {
+                match decoder_out.read_exact(&mut raw) {
+                    Ok(()) => initial.push(raw.clone()),
+                    Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                    Err(error) => bail!("decoder-failed: {error}"),
+                }
+            }
+            if initial.is_empty() {
+                bail!("decode-failed: no frames to build the background");
+            }
+            let median = median_frame(&initial, frame_bytes);
+            let mut planes = vec![0f32; plane * 3];
+            copy_planes(&resizer.resize(&median), plane, engine.normalization(), &mut planes, 0);
+            bg_planes = Some(planes);
+            background_log = Some(format!("median of {} frames", initial.len()));
+        }
+    }
+    if let Some(source) = &background_log {
+        emit_log(job, format!("ball: background = {source}"));
+    }
+    let bg_channels = if bg_planes.is_some() { 3 } else { 0 };
+    let mut tensor = vec![0f32; engine.channels * plane];
+    if let Some(planes) = &bg_planes {
+        tensor[..planes.len()].copy_from_slice(planes);
+    }
     let mut points: Vec<Point> = Vec::with_capacity(total_frames);
     let mut frame_index = 0usize;
     let mut sigmoid_reported = false;
     let mut last_emit = Instant::now();
 
+    // Сначала обрабатываем уже прочитанные кадры фона, затем поток декодера.
+    let mut initial_index = 0usize;
     loop {
-        match decoder_out.read_exact(&mut raw) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(error) => bail!("decoder-failed: {error}"),
-        }
-        let resized = resizer.resize(&raw);
+        let frame_rgb: &[u8] = if initial_index < initial.len() {
+            let frame = &initial[initial_index];
+            initial_index += 1;
+            frame.as_slice()
+        } else {
+            match decoder_out.read_exact(&mut raw) {
+                Ok(()) => raw.as_slice(),
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(error) => bail!("decoder-failed: {error}"),
+            }
+        };
+        let resized = resizer.resize(frame_rgb);
         if buffer.len() < engine.frames {
             buffer.push(resized);
         } else {
@@ -912,18 +1031,7 @@ fn run_job(job: &str, config: &Config, model: &mut Option<Model>) -> Result<Valu
         }
         if buffer.len() == engine.frames {
             for (slot, frame) in buffer.iter().enumerate() {
-                for channel in 0..3 {
-                    let from = channel * plane;
-                    let to = (slot * 3 + channel) * plane;
-                    match (engine.mean, engine.std) {
-                        (Some(mean), Some(std)) => {
-                            for index in 0..plane {
-                                tensor[to + index] = (frame[from + index] - mean[channel]) / std[channel];
-                            }
-                        }
-                        _ => tensor[to..to + plane].copy_from_slice(&frame[from..from + plane]),
-                    }
-                }
+                copy_planes(frame, plane, engine.normalization(), &mut tensor, (bg_channels + slot * 3) * plane);
             }
             let output = engine.infer(&tensor)?;
             if output.len() % plane != 0 {
@@ -1025,6 +1133,7 @@ fn run_job(job: &str, config: &Config, model: &mut Option<Model>) -> Result<Valu
         "csv": csv_path.to_string_lossy(),
         "ass": ass_path.to_string_lossy(),
         "video": video,
+        "background": background_log,
         "model": {
             "frames": engine.frames,
             "width": engine.width,
@@ -1095,22 +1204,17 @@ fn run_image(job: &str, config: &Config, engine: &mut Model, started: &Instant) 
     }
     let plane = engine.width as usize * engine.height as usize;
     let frames = engine.frames;
+    // У concat-моделей фон идёт ПЕРВЫМ блоком каналов (так их обучали:
+    // `np.concatenate((median_img, frames))` в TrackNetV3).
+    let bg_channels = if engine.channels == (frames + 1) * 3 { 3 } else { 0 };
     let mut tensor = vec![0f32; engine.channels * plane];
+    if bg_channels == 3 {
+        copy_planes(&resized[0], plane, engine.normalization(), &mut tensor, 0);
+    }
     for slot in 0..frames {
         let frame = &resized[slot.min(resized.len() - 1)];
         if engine.channels == frames * 3 || engine.channels == (frames + 1) * 3 {
-            for channel in 0..3 {
-                let from = channel * plane;
-                let to = (slot * 3 + channel) * plane;
-                match (engine.mean, engine.std) {
-                    (Some(mean), Some(std)) => {
-                        for index in 0..plane {
-                            tensor[to + index] = (frame[from + index] - mean[channel]) / std[channel];
-                        }
-                    }
-                    _ => tensor[to..to + plane].copy_from_slice(&frame[from..from + plane]),
-                }
-            }
+            copy_planes(frame, plane, engine.normalization(), &mut tensor, (bg_channels + slot * 3) * plane);
         } else if engine.channels == frames {
             // subtract: разница с первым кадром как фоном.
             for index in 0..plane {
@@ -1118,14 +1222,6 @@ fn run_image(job: &str, config: &Config, engine: &mut Model, started: &Instant) 
             }
         } else {
             bail!("model-layout-unsupported: bg_mode={} channels={}", engine.bg_mode, engine.channels);
-        }
-    }
-    if engine.channels == (frames + 1) * 3 {
-        let background = &resized[0];
-        for channel in 0..3 {
-            let from = channel * plane;
-            let to = (frames * 3 + channel) * plane;
-            tensor[to..to + plane].copy_from_slice(&background[from..from + plane]);
         }
     }
     emit_progress(job, 1, 1, *started, "infer");
@@ -1169,6 +1265,7 @@ fn run_image(job: &str, config: &Config, engine: &mut Model, started: &Instant) 
         "confidence": conf,
         "visible": visible,
         "annotated": if config.annotate() && visible { Some(annotated.to_string_lossy().to_string()) } else { None },
+        "background": if engine.channels == (engine.frames + 1) * 3 { Some("first image") } else { None },
         "model": {
             "frames": engine.frames,
             "channels": engine.channels,
@@ -1405,6 +1502,8 @@ mod tests {
             ffmpeg_path: None,
             ffprobe_path: None,
             overwrite: None,
+            background: None,
+            background_samples: None,
         }
     }
 
@@ -1414,6 +1513,42 @@ mod tests {
         let first = ModelSignature::of(&test_config("/models/blurball_tt.onnx"));
         let second = ModelSignature::of(&test_config("/models/blurball_tt.onnx"));
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn median_frame_is_per_pixel_and_averages_middle() {
+        // Нечётное число кадров: медиана — средний элемент.
+        let frames = vec![vec![10u8, 30], vec![20, 20], vec![50, 40]];
+        // Порядок по пикселям: [10,20,50] -> 20; [30,20,40] -> 30.
+        assert_eq!(median_frame(&frames, 2), vec![20, 30]);
+        // Чётное число кадров: среднее двух центральных значений.
+        let even = vec![vec![0u8], vec![10], vec![40], vec![100]];
+        assert_eq!(median_frame(&even, 1), vec![25]);
+    }
+
+    #[test]
+    fn copy_planes_applies_normalization_and_offset() {
+        let plane = 2;
+        let src = vec![0.5f32, 0.5, 0.25, 0.25, 0.75, 0.75];
+        let mut out = vec![0f32; 3 * plane * 2];
+        copy_planes(&src, plane, None, &mut out, 3 * plane);
+        assert_eq!(&out[3 * plane..], &src[..]);
+        let mut normalized = vec![0f32; 3 * plane];
+        copy_planes(&src, plane, Some(([0.0, 0.0, 0.0], [2.0, 2.0, 2.0])), &mut normalized, 0);
+        assert!((normalized[0] - 0.25).abs() < 1e-6);
+        assert!((normalized[2] - 0.125).abs() < 1e-6);
+    }
+
+    #[test]
+    fn background_samples_are_clamped() {
+        let mut config = test_config("/models/tracknetv3.onnx");
+        assert_eq!(config.background_samples(), 32);
+        config.background_samples = Some(4);
+        assert_eq!(config.background_samples(), 8);
+        config.background_samples = Some(1024);
+        assert_eq!(config.background_samples(), 128);
+        config.background = Some(String::new());
+        assert!(config.background().is_none());
     }
 
     #[test]

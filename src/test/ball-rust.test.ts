@@ -53,6 +53,22 @@ test('ball config takes defaults from settings and rejects invalid numbers', () 
     assert.throws(() => buildBallConfig({ maxGapFrames: 500 }, settings, source, join(dir, 'out'), 'auto'), /maxGapFrames must be between 0 and 120/)
     assert.throws(() => buildBallConfig({}, settings, join(dir, 'missing.mp4'), join(dir, 'out'), 'auto'), /Source not found/)
     assert.throws(() => buildBallConfig({ model: join(dir, 'missing.onnx') }, settings, source, join(dir, 'out'), 'auto'), /Model not found/)
+
+    // Фон для bgMode=concat: путь проверяется, число кадров ограничено.
+    const withBackground = buildBallConfig(
+      { bgMode: 'concat', background: source, backgroundSamples: 16, frames: 8 },
+      settings,
+      source,
+      join(dir, 'out'),
+      'auto',
+    )
+    assert.equal(withBackground.bgMode, 'concat')
+    assert.equal(withBackground.background, source)
+    assert.equal(withBackground.backgroundSamples, 16)
+    assert.equal(withBackground.frames, 8)
+    assert.throws(() => buildBallConfig({ background: join(dir, 'missing.png') }, settings, source, join(dir, 'out'), 'auto'), /Background not found/)
+    assert.throws(() => buildBallConfig({ backgroundSamples: 4 }, settings, source, join(dir, 'out'), 'auto'), /backgroundSamples must be between 8 and 128/)
+    assert.throws(() => buildBallConfig({ backgroundSamples: 500 }, settings, source, join(dir, 'out'), 'auto'), /backgroundSamples must be between 8 and 128/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -87,4 +103,9 @@ test('ball image result keeps coordinates and annotation', () => {
   assert.equal(video.x, undefined)
   assert.equal(video.annotated, null)
   assert.equal(video.frames, 125)
+
+  // Фон, использованный на видео, приходит в результат как строка.
+  const withBackground = parseBallResult({ frames: 10, background: 'median of 32 frames' })
+  assert.equal(withBackground.background, 'median of 32 frames')
+  assert.equal(parseBallResult({ frames: 10 }).background, null)
 })

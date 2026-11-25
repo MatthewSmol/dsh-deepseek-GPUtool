@@ -141,6 +141,19 @@ call history.
 - Tests: +5 (response parsing, multipart against a local server, the key never
   echoed, file limits) for 17 total.
 
+### 1.7.3 — 2026-11-25
+
+- **TrackNetV3 on video**: `bgMode=concat` now works for videos, not only still
+  images. The background is the per-pixel median of the first frames of the
+  range (like `np.median` in the official TrackNetV3) or an explicit
+  `background` image; channels are laid out as `[background, frames…]` exactly
+  as in training. New `background` and `backgroundSamples` (8–128, default 32)
+  parameters on the `ball` MCP tool.
+- `subtract`/`subtract_concat` remain still-image only.
+- The background actually used is logged and returned
+  (`background=median of N frames`).
+- Tests: Rust ball 12, Node 62.
+
 ### 1.7.2 — 2026-11-25
 
 - **Model switching in a persistent worker**: `ball`, `upscale` and `face` loaded

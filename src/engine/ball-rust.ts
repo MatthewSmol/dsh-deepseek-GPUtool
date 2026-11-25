@@ -70,6 +70,10 @@ export interface BallParams {
   inputWidth?: number
   inputHeight?: number
   bgMode?: string
+  /** Готовая картинка-фон для bgMode=concat на видео. */
+  background?: string
+  /** Сколько первых кадров усреднять в медианный фон (8–128). */
+  backgroundSamples?: number
   device?: 'auto' | number | 'cpu'
   overwrite?: boolean
 }
@@ -94,6 +98,8 @@ export interface BallConfig {
   frames?: number
   inputWidth?: number
   inputHeight?: number
+  background?: string
+  backgroundSamples?: number
   device: 'auto' | 'cpu' | 'cuda'
   gpuIndex?: number
   ffmpegPath: string
@@ -110,6 +116,8 @@ export interface BallResult {
   width?: number
   height?: number
   annotated?: string | null
+  /** Человекочитаемое описание фона: "median of N frames" / "image …" / "first image". */
+  background?: string | null
   device: string
   providers: string[]
   frames: number
@@ -145,6 +153,12 @@ export function buildBallConfig(
   if (params.maxGapFrames != null && (params.maxGapFrames < 0 || params.maxGapFrames > 120)) {
     throw Object.assign(new Error('maxGapFrames must be between 0 and 120'), { code: 'invalid-args' })
   }
+  if (params.background != null && !existsSync(params.background)) {
+    throw Object.assign(new Error(`Background not found: ${params.background}`), { code: 'input-missing' })
+  }
+  if (params.backgroundSamples != null && (params.backgroundSamples < 8 || params.backgroundSamples > 128)) {
+    throw Object.assign(new Error('backgroundSamples must be between 8 and 128'), { code: 'invalid-args' })
+  }
   return {
     source,
     images: params.images,
@@ -165,6 +179,8 @@ export function buildBallConfig(
     frames: params.frames,
     inputWidth: params.inputWidth,
     inputHeight: params.inputHeight,
+    background: params.background,
+    backgroundSamples: params.backgroundSamples,
     device,
     gpuIndex,
     ffmpegPath: settings.ffmpegGpuPath,
@@ -196,6 +212,7 @@ export function parseBallResult(input: Record<string, unknown>): BallResult {
     width: typeof input.width === 'number' ? input.width : undefined,
     height: typeof input.height === 'number' ? input.height : undefined,
     annotated: typeof input.annotated === 'string' ? input.annotated : null,
+    background: typeof input.background === 'string' ? input.background : null,
     device: String(input.device ?? 'cpu'),
     providers: Array.isArray(input.providers) ? input.providers.map(String) : [],
     frames: number(input.frames, 0),

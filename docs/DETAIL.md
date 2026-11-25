@@ -114,6 +114,11 @@ CUDA EP при наличии; `device:"auto"` допускает CPU с пре�
 пересоздаётся и в лог уходит `ball: reloading model (was …)`. Замена файла весов
 по тому же пути не отслеживается — нужен перезапуск воркера.
 
+`bgMode=concat` работает и на видео: фон — попиксельная медиана первых
+`backgroundSamples` кадров диапазона (по умолчанию 32) или готовая картинка
+`background`; каналы подаются как `[фон, кадры…]`, как в обучении TrackNetV3.
+`subtract`/`subtract_concat` остаются только для статичных изображений.
+
 ## GPU-апскейл x2 (SPAN fp16)
 
 `rust/upscale-worker` → `bin/gputool-upscale`: ORT CUDA + `disable_cpu_ep_fallback`,

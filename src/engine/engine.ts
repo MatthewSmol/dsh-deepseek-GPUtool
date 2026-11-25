@@ -60,7 +60,7 @@ import {
 } from './upscale-rust.js'
 import { run, stream } from './proc.js'
 
-export const VERSION = '1.7.2'
+export const VERSION = '1.7.3'
 
 /** Диагностика ffmpeg для /api/state: что реально доступно в бинаре. */
 export function buildFfmpegDiagnostics(caps: FfmpegCaps, gpu: boolean): FfmpegDiagnostics {
@@ -690,7 +690,8 @@ export class Engine {
         }
         ctx.log(
           `ball: ${result.detected}/${result.frames} кадров с мячом, device=${result.device}, ` +
-            `model=${result.model.width}x${result.model.height} frames=${result.model.frames}`,
+            `model=${result.model.width}x${result.model.height} frames=${result.model.frames}` +
+            (result.background ? `, background=${result.background}` : ''),
         )
         for (const path of [result.jsonl, result.csv, result.video].filter((value): value is string => Boolean(value))) {
           const info = await stat(path).catch(() => null)
