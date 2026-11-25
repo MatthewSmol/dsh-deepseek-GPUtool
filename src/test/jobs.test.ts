@@ -119,3 +119,49 @@ test('cancel force-finalizes a running job and frees the slot', async () => {
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('однотипные rust-задания ждут общий воркер, а не падают', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'gputool-jobs-'))
+  const previous = process.env.GPUTOOL_HOME
+  process.env.GPUTOOL_HOME = home
+  try {
+    // Две полосы GPU: без сериализации второе ball-задание стартовало бы
+    // параллельно и упало с «ball worker is busy».
+    const manager = new JobManager({
+      historyLimit: 20,
+      jobHistoryLimit: 20,
+      gpuConcurrency: 2,
+      cpuConcurrency: 1,
+      gpuAvailable: () => true,
+      stallTimeoutMs: 600_000,
+      pidDeadGraceMs: 60,
+      cancelGraceMs: 60,
+      logger: { info: () => undefined, warn: () => undefined },
+    })
+    const events: string[] = []
+    const first = manager.submit(
+      { ...input('ball-1'), kind: 'ball', device: { kind: 'gpu', index: 0, name: 'gpu0' } },
+      async () => {
+        events.push('first')
+        await new Promise((resolve) => setTimeout(resolve, 150))
+      },
+    )
+    const second = manager.submit(
+      { ...input('ball-2'), kind: 'ball', device: { kind: 'gpu', index: 1, name: 'gpu1' } },
+      async () => {
+        events.push('second')
+      },
+    )
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    assert.deepEqual(events, ['first'])
+    assert.equal(manager.get(second.id)?.status, 'queued')
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    assert.deepEqual(events, ['first', 'second'])
+    assert.equal(manager.get(first.id)?.status, 'succeeded')
+    assert.equal(manager.get(second.id)?.status, 'succeeded')
+  } finally {
+    if (previous === undefined) delete process.env.GPUTOOL_HOME
+    else process.env.GPUTOOL_HOME = previous
+    rmSync(home, { recursive: true, force: true })
+  }
+})

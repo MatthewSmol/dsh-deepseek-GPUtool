@@ -188,6 +188,14 @@ export function createPanel(ui: Ui): (props: any) => any {
 
   function Progress(props: { job: Job; tr: (key: string) => string }): any {
     const progress = props.job.progress
+    // Фазы приходят из Rust-воркеров латиницей; переводим известные, остальные
+    // показываем как есть.
+    const phaseText = (phase: string | null | undefined): string => {
+      if (!phase) return ''
+      const key = `phase.${phase}`
+      const value = props.tr(key)
+      return value === key ? phase : value
+    }
     const percent = progress.percent
     const determinate = typeof percent === 'number' && Number.isFinite(percent)
     const label = determinate ? `${Math.floor(percent as number)}${props.tr('progress.percent')}` : props.tr('progress.indeterminate')
@@ -213,7 +221,7 @@ export function createPanel(ui: Ui): (props: any) => any {
       h(
         'div',
         { className: 'gputool-progress-meta' },
-        h('span', null, progress.phase || ''),
+        h('span', null, phaseText(progress.phase)),
         counts.length ? h('span', null, counts.join(' · ')) : null,
         !determinate && progress.processedMs == null && props.job.status === 'running'
           ? h('span', { className: 'gputool-muted' }, props.tr('progress.noData'))

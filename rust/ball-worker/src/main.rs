@@ -188,6 +188,16 @@ fn emit_progress(job: &str, frame: usize, total: usize, started: Instant, phase:
     }));
 }
 
+/// Дренаж stderr ffmpeg в отдельном потоке, чтобы заполненный пайп (64 КБ) не
+/// блокировал декодер: иначе `wait()` после конца чтения висит навсегда.
+fn drain_stderr(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        let _ = pipe.read_to_end(&mut buffer);
+        String::from_utf8_lossy(&buffer).into_owned()
+    })
+}
+
 // ------------------------------------------------------------------ модель
 
 struct Model {
@@ -796,6 +806,7 @@ fn run_job(job: &str, config: &Config, model: &mut Option<Model>) -> Result<Valu
         .spawn()
         .context("decoder-failed: cannot start ffmpeg")?;
     let mut decoder_out = decoder.stdout.take().context("decoder stdout")?;
+    let decoder_err = decoder.stderr.take().map(drain_stderr);
 
     let resizer = Resizer::new(width as usize, height as usize, engine.width, engine.height);
     let frame_bytes = width as usize * height as usize * 3;
@@ -875,24 +886,22 @@ fn run_job(job: &str, config: &Config, model: &mut Option<Model>) -> Result<Valu
             });
         }
         frame_index += 1;
-        if last_emit.elapsed().as_millis() >= 500 || frame_index == total_frames {
+        if last_emit.elapsed().as_millis() >= 500 {
             emit_progress(job, frame_index.min(total_frames), total_frames, started, "track");
             last_emit = Instant::now();
         }
-        if frame_index >= total_frames {
-            break;
-        }
     }
+    // Не останавливаемся по счётчику: лишние кадры на границе `-t`/fps иначе
+    // оставляют декодер заблокированным на пайпе, а wait() висит навсегда.
+    drop(decoder_out);
+    emit_progress(job, frame_index.min(total_frames), total_frames, started, "finalize");
     let decoder_status = decoder.wait().context("decoder wait")?;
+    let decoder_log = decoder_err.map(|handle| handle.join().unwrap_or_default()).unwrap_or_default();
     if !decoder_status.success() {
-        let mut message = String::new();
-        if let Some(mut stderr) = decoder.stderr.take() {
-            let _ = stderr.read_to_string(&mut message);
-        }
         if points.is_empty() {
-            bail!("decoder-failed: {}", message.trim());
+            bail!("decoder-failed: {}", decoder_log.trim());
         }
-        emit_log(job, format!("decoder warning: {}", message.trim()));
+        emit_log(job, format!("decoder warning: {}", decoder_log.trim()));
     }
 
     // Добиваем пропущенные в начале кадры, чтобы jsonl был по всему таймлайну.

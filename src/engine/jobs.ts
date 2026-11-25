@@ -98,6 +98,13 @@ const DEFAULT_STALL_MS = 600_000
 const DEFAULT_PID_DEAD_GRACE_MS = 10_000
 const DEFAULT_CANCEL_GRACE_MS = 5_000
 
+/**
+ * Виды заданий, которые обслуживает ОДИН процесс Rust-воркера на плагин.
+ * Параллельный старт второго такого задания падает с «worker is busy», поэтому
+ * очередь держит их последовательно (статус остаётся queued, а не failed).
+ */
+const SERIAL_KINDS = new Set(['ball', 'face', 'upscale'])
+
 function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
@@ -275,6 +282,11 @@ export class JobManager {
   }
 
   private canStart(job: JobRecord): boolean {
+    if (SERIAL_KINDS.has(job.kind)) {
+      for (const id of this.running) {
+        if (this.jobs.get(id)?.kind === job.kind) return false
+      }
+    }
     if (job.device.kind === 'cpu') {
       const cpuRunning = [...this.running].filter((id) => this.jobs.get(id)?.device.kind === 'cpu').length
       return cpuRunning < this.options.cpuConcurrency

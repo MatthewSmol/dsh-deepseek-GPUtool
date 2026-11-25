@@ -117,7 +117,7 @@ fn emit_progress(
 ) {
     let elapsed = started.elapsed().as_secs_f64().max(0.001);
     let fps = fps_override.unwrap_or(frame as f64 / elapsed);
-    let percent = total.map(|total| (frame as f64 / total.max(1) as f64) * 100.0);
+    let percent = total.map(|total| ((frame as f64 / total.max(1) as f64) * 100.0).min(100.0));
     let eta_ms = match total {
         Some(total) if fps > 0.0 && frame > 0 => Some(((total.saturating_sub(frame)) as f64 / fps * 1000.0).round() as u64),
         _ => None,
@@ -132,6 +132,18 @@ fn emit_progress(
         "etaMs": eta_ms,
         "phase": phase,
     }));
+}
+
+/// Дренаж stderr ffmpeg в отдельном потоке.
+///
+/// Без него пайп stderr (64 КБ) заполняется и декодер/энкодер блокируется на
+/// записи; воркер в это время ждёт `wait()` и задача «висит» навсегда.
+fn drain_stderr(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        let _ = pipe.read_to_end(&mut buffer);
+        String::from_utf8_lossy(&buffer).into_owned()
+    })
 }
 
 // ------------------------------------------------------------------ CUDA-сессия
@@ -577,6 +589,8 @@ fn run_video(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Valu
 
     let mut decoder_out = decoder.stdout.take().context("decoder stdout")?;
     let mut encoder_in = encoder_process.stdin.take().context("encoder stdin")?;
+    let decoder_err = decoder.stderr.take().map(drain_stderr);
+    let encoder_err = encoder_process.stderr.take().map(drain_stderr);
     let frame_bytes = width as usize * height as usize * 3;
     let batch_size = config.batch();
     let mut processed = 0usize;
@@ -599,9 +613,6 @@ fn run_video(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Valu
                     break 'outer;
                 }
             }
-            if processed + frames.len() >= total_frames {
-                break;
-            }
         }
         if frames.is_empty() {
             break;
@@ -623,36 +634,34 @@ fn run_video(job: &str, config: &Config, upscaler: &mut Upscaler) -> Result<Valu
             }
             processed += 1;
         }
-        if last_emit.elapsed().as_millis() >= 500 || processed >= total_frames {
-            emit_progress(job, processed, Some(total_frames), started, "frames", None);
+        if last_emit.elapsed().as_millis() >= 500 {
+            emit_progress(job, processed.min(total_frames), Some(total_frames), started, "frames", None);
             last_emit = Instant::now();
         }
-        if processed >= total_frames {
-            break;
-        }
     }
+    // Счётчик кадров нельзя использовать как условие остановки: декодер может
+    // отдать на пару кадров больше расчётного total_frames, и тогда читатель
+    // закрывает пайп, а ffmpeg навсегда блокируется на записи в него.
     drop(encoder_in);
+    drop(decoder_out);
+    // На границе `-t` кадров может быть больше расчётного total_frames: в
+    // финализации показываем фактическое число, иначе прогресс «застревает».
+    emit_progress(job, processed, Some(total_frames.max(processed)), started, "finalize", None);
     let decoder_status = decoder.wait().context("decoder wait")?;
     let encoder_status = encoder_process.wait().context("encoder wait")?;
+    let decoder_log = decoder_err.map(|handle| handle.join().unwrap_or_default()).unwrap_or_default();
+    let encoder_log = encoder_err.map(|handle| handle.join().unwrap_or_default()).unwrap_or_default();
     if let Some(error) = failure {
         let _ = fs::remove_file(&output_path);
         return Err(error);
     }
     if !decoder_status.success() {
         let _ = fs::remove_file(&output_path);
-        let mut message = String::new();
-        if let Some(mut stderr) = decoder.stderr.take() {
-            let _ = stderr.read_to_string(&mut message);
-        }
-        bail!("decode-failed: {}", message.trim());
+        bail!("decode-failed: {}", decoder_log.trim());
     }
     if !encoder_status.success() {
         let _ = fs::remove_file(&output_path);
-        let mut message = String::new();
-        if let Some(mut stderr) = encoder_process.stderr.take() {
-            let _ = stderr.read_to_string(&mut message);
-        }
-        bail!("encode-failed: {}", message.trim());
+        bail!("encode-failed: {}", encoder_log.trim());
     }
     let bytes = fs::metadata(&output_path).map(|meta| meta.len()).unwrap_or(0);
     let elapsed = started.elapsed();

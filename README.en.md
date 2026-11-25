@@ -141,6 +141,19 @@ call history.
 - Tests: +5 (response parsing, multipart against a local server, the key never
   echoed, file limits) for 17 total.
 
+### 1.7.1 — 2026-11-25
+
+- **Stuck at 100%**: the `upscale` and `ball` workers stopped reading frames at
+  the computed `total_frames`, while `-t` and the fps filter emit a few frames
+  more. The decoder stayed blocked on a full pipe and `wait()` hung forever, so
+  the job froze at 100%. Reading now continues to EOF; `total_frames` only
+  drives percent and ETA.
+- **ffmpeg stderr** is drained by a separate thread, so a full 64 KB pipe can no
+  longer block the decoder or encoder.
+- Panel: phases are localized (`frames`, `finalizing the file`, `ball tracking`,
+  `faces`); after 100% the job shows finalization instead of frozen frames.
+- Tests: 60 Node, Rust `ball`/`upscale`, `clippy -D warnings`.
+
 ### 1.7.0 — 2026-11-25
 
 - **`ball_image`**: still-image ball capture (or 1–8 images) in Rust: heatmap →
