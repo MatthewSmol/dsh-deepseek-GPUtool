@@ -9,6 +9,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -148,9 +149,50 @@ fn drain_stderr(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle
 
 // ------------------------------------------------------------------ CUDA-сессия
 
+/// ONNX Runtime Environment создаётся один раз на процесс: повторный
+/// `ort::init()` при перезагрузке модели возвращает ошибку `init onnxruntime`.
+fn ort_env() -> Result<&'static ort::environment::Environment> {
+    static ENV: OnceLock<ort::environment::Environment> = OnceLock::new();
+    if let Some(env) = ENV.get() {
+        return Ok(env);
+    }
+    let env = ort::init().build().context("init onnxruntime")?;
+    let _ = ENV.set(env);
+    Ok(ENV.get().expect("ort env"))
+}
+
+/// Ключ загруженной сессии: путь модели, запрошенный провайдер и каталог кэша
+/// TensorRT. Постоянный воркер держит сессию между заданиями, поэтому смена
+/// любого поля обязана её пересоздать.
+#[derive(Clone, Debug, PartialEq)]
+struct SessionKey {
+    model: String,
+    provider: String,
+    engine_cache: String,
+}
+
+impl SessionKey {
+    fn of(model: &Path, provider: Option<&str>, engine_cache: Option<&str>) -> Self {
+        Self {
+            model: model.display().to_string(),
+            provider: provider.unwrap_or("auto").to_string(),
+            engine_cache: engine_cache.unwrap_or("").to_string(),
+        }
+    }
+}
+
+/// Имя файла для короткого лога о перезагрузке.
+fn short_name(path: &str) -> &str {
+    Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(path)
+}
+
 struct Upscaler {
     session: Session,
     provider: String,
+    key: SessionKey,
 }
 
 impl Upscaler {
@@ -158,7 +200,8 @@ impl Upscaler {
         if !model.is_file() {
             bail!("model not found: {}", model.display());
         }
-        let env = ort::init().build().context("init onnxruntime")?;
+        let key = SessionKey::of(model, provider, engine_cache.as_deref());
+        let env = ort_env()?;
         let wanted = provider.unwrap_or("auto");
         let attempts: Vec<&str> = match wanted {
             "tensorrt" => vec!["tensorrt"],
@@ -183,7 +226,7 @@ impl Upscaler {
                                     .into_owned()
                             });
                         let _ = fs::create_dir_all(&cache);
-                        let builder = Session::builder(&env)?;
+                        let builder = Session::builder(env)?;
                         let builder = builder
                             .with_execution_providers([ort::ep::TensorRT::default()
                                 .with_device_id(0)
@@ -203,7 +246,7 @@ impl Upscaler {
                         (session, "TensorrtExecutionProvider".to_string())
                     }
                     _ => {
-                        let builder = Session::builder(&env)?;
+                        let builder = Session::builder(env)?;
                         let builder = builder
                             .with_execution_providers([ort::ep::CUDA::default().with_device_id(0).build()])
                             .map_err(|error| anyhow!("cuda-unavailable: {error}"))?;
@@ -232,7 +275,7 @@ impl Upscaler {
             }
         }
         let (session, provider) = built.ok_or_else(|| anyhow!("{}", last_error.unwrap_or_else(|| "no execution provider".to_string())))?;
-        let mut upscaler = Self { session, provider };
+        let mut upscaler = Self { session, provider, key };
         let probe = vec![f16::ZERO; 3 * 64 * 64];
         let output = upscaler.infer_raw(1, 64, 64, probe.as_slice()).map_err(|error| {
             anyhow!("model-fp16-required: не удалось выполнить fp16-инференс ({error}); нужна ONNX-модель с float16 I/O")
@@ -704,7 +747,28 @@ fn prepare_frame(data: &[u8], width: usize, height: usize, target: Option<(u32, 
 fn run_job(job: &str, config: &Config, upscaler: &mut Option<Upscaler>) -> Result<Value> {
     config.check_tile()?;
     config.target_half()?;
-    if upscaler.is_none() {
+    // Сессию пересоздаём, если сменилась модель, запрошенный провайдер или
+    // каталог кэша: иначе постоянный воркер молча работал бы со старой.
+    let wanted = SessionKey::of(
+        Path::new(&config.model),
+        config.provider.as_deref(),
+        config.engine_cache.as_deref(),
+    );
+    let reload = match upscaler.as_ref() {
+        Some(loaded) => loaded.key != wanted,
+        None => true,
+    };
+    if reload {
+        if let Some(previous) = upscaler.as_ref() {
+            emit_log(
+                job,
+                format!(
+                    "upscale: reloading session (was {} on {})",
+                    short_name(&previous.key.model),
+                    previous.key.provider
+                ),
+            );
+        }
         let started = Instant::now();
         let loaded = Upscaler::load(Path::new(&config.model), config.provider.as_deref(), config.engine_cache.clone())?;
         emit_log(job, format!("{} fp16 session ready in {} ms (x2)", loaded.provider, started.elapsed().as_millis()));
@@ -905,6 +969,18 @@ mod tests {
         let b = dir.join("a.png");
         assert!(output_path(false, &b, &dir).to_string_lossy().ends_with("a_x2.png"));
         assert!(output_path(false, &a, &dir).to_string_lossy().ends_with("b_x2.png"));
+    }
+
+    #[test]
+    fn session_key_reloads_on_model_or_provider_change() {
+        let model = Path::new("/models/span2x_ch48_fp16.onnx");
+        let base = SessionKey::of(model, None, None);
+        assert_eq!(base, SessionKey::of(model, Some("auto"), Some("")));
+        // Другая модель — сессию пересоздаём.
+        assert_ne!(base, SessionKey::of(Path::new("/models/span2x_ch52_fp16.onnx"), None, None));
+        // Сменился запрошенный провайдер или кэш TensorRT.
+        assert_ne!(base, SessionKey::of(model, Some("cuda"), None));
+        assert_ne!(base, SessionKey::of(model, None, Some("/tmp/trt-cache")));
     }
 
 }

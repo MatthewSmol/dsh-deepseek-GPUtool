@@ -179,6 +179,43 @@ interface Pending {
   ctx: JobContext
 }
 
+/**
+ * Разбор `result`-события воркера. Вынесено из клиента ради теста: раньше
+ * координаты картинки (`x/y/confidence/visible/annotated`) терялись при
+ * маппинге, и `ball_image` возвращал только `model`.
+ */
+export function parseBallResult(input: Record<string, unknown>): BallResult {
+  const model = (input.model ?? {}) as Record<string, unknown>
+  const number = (value: unknown, fallback: number): number => (typeof value === 'number' ? value : fallback)
+  return {
+    engine: 'rust',
+    x: typeof input.x === 'number' ? input.x : undefined,
+    y: typeof input.y === 'number' ? input.y : undefined,
+    confidence: typeof input.confidence === 'number' ? input.confidence : undefined,
+    visible: input.visible === true,
+    width: typeof input.width === 'number' ? input.width : undefined,
+    height: typeof input.height === 'number' ? input.height : undefined,
+    annotated: typeof input.annotated === 'string' ? input.annotated : null,
+    device: String(input.device ?? 'cpu'),
+    providers: Array.isArray(input.providers) ? input.providers.map(String) : [],
+    frames: number(input.frames, 0),
+    detected: number(input.detected, 0),
+    fps: number(input.fps, 0),
+    hasAudio: input.hasAudio === true,
+    jsonl: String(input.jsonl ?? ''),
+    csv: String(input.csv ?? ''),
+    ass: String(input.ass ?? ''),
+    video: typeof input.video === 'string' ? input.video : null,
+    model: {
+      frames: number(model.frames, 3),
+      width: number(model.width, 0),
+      height: number(model.height, 0),
+      offset: number(model.offset, 0),
+    },
+    elapsedMs: number(input.elapsedMs, 0),
+  }
+}
+
 /** Клиент постоянного процесса: сессия ORT и модель переиспользуются. */
 export class RustBallWorker {
   private child: ChildProcessWithoutNullStreams | null = null
@@ -288,28 +325,7 @@ export class RustBallWorker {
       return
     }
     if (event.type === 'result') {
-      const result = (event.result ?? {}) as Record<string, unknown>
-      const model = (result.model ?? {}) as Record<string, unknown>
-      pending.resolve({
-        engine: 'rust',
-        device: String(result.device ?? 'cpu'),
-        providers: Array.isArray(result.providers) ? result.providers.map(String) : [],
-        frames: Number(result.frames ?? 0),
-        detected: Number(result.detected ?? 0),
-        fps: Number(result.fps ?? 0),
-        hasAudio: result.hasAudio === true,
-        jsonl: String(result.jsonl ?? ''),
-        csv: String(result.csv ?? ''),
-        ass: String(result.ass ?? ''),
-        video: typeof result.video === 'string' ? result.video : null,
-        model: {
-          frames: Number(model.frames ?? 3),
-          width: Number(model.width ?? 0),
-          height: Number(model.height ?? 0),
-          offset: Number(model.offset ?? 0),
-        },
-        elapsedMs: Number(result.elapsedMs ?? 0),
-      })
+      pending.resolve(parseBallResult((event.result ?? {}) as Record<string, unknown>))
       this.pending = null
       return
     }

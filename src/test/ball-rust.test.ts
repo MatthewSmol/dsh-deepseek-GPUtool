@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import test from 'node:test'
-import { ballAvailable, ballModelPath, buildBallConfig } from '../engine/ball-rust.js'
+import { ballAvailable, ballModelPath, buildBallConfig, parseBallResult } from '../engine/ball-rust.js'
 import { defaultSettings } from '../engine/settings.js'
 
 function fixture(): { dir: string; source: string; model: string } {
@@ -56,4 +56,35 @@ test('ball config takes defaults from settings and rejects invalid numbers', () 
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+
+test('ball image result keeps coordinates and annotation', () => {
+  const parsed = parseBallResult({
+    engine: 'rust',
+    device: 'cuda:0',
+    providers: ['CUDAExecutionProvider', 'CPUExecutionProvider'],
+    images: 1,
+    width: 1280,
+    height: 720,
+    x: 210.99,
+    y: 180.21,
+    confidence: 0.2546,
+    visible: true,
+    annotated: '/tmp/frame_ball.png',
+    model: { frames: 3, channels: 9, width: 512, height: 288, bgMode: '' },
+    elapsedMs: 775,
+  })
+  assert.equal(parsed.visible, true)
+  assert.ok(Math.abs((parsed.x ?? 0) - 210.99) < 0.01)
+  assert.ok(Math.abs((parsed.confidence ?? 0) - 0.2546) < 1e-3)
+  assert.equal(parsed.annotated, '/tmp/frame_ball.png')
+  assert.deepEqual(parsed.model, { frames: 3, width: 512, height: 288, offset: 0 })
+
+  // Видео-результат без координат не должен получать фантомные значения.
+  const video = parseBallResult({ frames: 125, detected: 30, jsonl: '/tmp/ball.jsonl' })
+  assert.equal(video.visible, false)
+  assert.equal(video.x, undefined)
+  assert.equal(video.annotated, null)
+  assert.equal(video.frames, 125)
 })

@@ -141,6 +141,21 @@ call history.
 - Tests: +5 (response parsing, multipart against a local server, the key never
   echoed, file limits) for 17 total.
 
+### 1.7.2 — 2026-11-25
+
+- **Model switching in a persistent worker**: `ball`, `upscale` and `face` loaded
+  their session once per process, so a second `ball` job with a different model
+  silently ran on the first one (BlurBall and TrackNetV3 runs on the same clip
+  produced byte-identical `ball.jsonl`/`ball.csv`). The session is now recreated
+  whenever the load signature changes: model path, frames/layout/size/device/
+  normalization (ball), model/provider/TensorRT cache (upscale), model
+  directory/input size/batch (face); the log line is `reloading model (was …)`.
+- **`ball_image`**: coordinates were dropped while parsing the worker result in
+  Node — `ball_image.json` contained only `model` and no annotated PNG was
+  produced. `x/y/confidence/visible/annotated` now reach the job.
+- Model weights unchanged: manifest 11/11 matches by sha256.
+- Tests: ball 9, upscale 5, face 4; Node 62.
+
 ### 1.7.1 — 2026-11-25
 
 - **Stuck at 100%**: the `upscale` and `ball` workers stopped reading frames at

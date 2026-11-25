@@ -87,7 +87,9 @@ curl -s -X POST http://127.0.0.1:PORT/api/jobs \
 
 `rust/face-worker` собирается в `bin/gputool-face` (`npm run build:rust`) и
 работает постоянным процессом: один `onnxruntime` Environment, сессии YuNet и
-SFace создаются один раз, кадры читаются из ffmpeg, ресайз идёт по
+SFace создаются при первом задании и пересоздаются, когда меняется каталог
+моделей, размер входа или батч (в лог пишется `face: reloading engine (was …)`);
+кадры читаются из ffmpeg, ресайз идёт по
 предвычисленным весам, инференс — батчами до 8 кадров, NMS и выравнивание по
 Umeyama — на Rust. Движок держит воркер между заданиями (`faceWorker: auto`),
 сам определяет по событию `ready`, прикрепился ли CUDA EP, и при отсутствии
@@ -107,12 +109,19 @@ CUDA EP при наличии; `device:"auto"` допускает CPU с пре�
 заполнение пропусков ≤ `maxGapFrames`, медиана окном 3. Выход: `ball.jsonl`,
 `ball.csv`, `ball.ass`, `ball.mp4` (subtitles + NVENC, аудио copy).
 
+Сессия переживает задания, поэтому у неё есть подпись загрузки (модель, число
+кадров, раскладка, размер входа, устройство, нормализация): при её смене сессия
+пересоздаётся и в лог уходит `ball: reloading model (was …)`. Замена файла весов
+по тому же пути не отслеживается — нужен перезапуск воркера.
+
 ## GPU-апскейл x2 (SPAN fp16)
 
 `rust/upscale-worker` → `bin/gputool-upscale`: ORT CUDA + `disable_cpu_ep_fallback`,
 вход/выход строго float16, фактор проверяется как ровно x2. Батч кадров
 (`batch`, 1–64), тайлинга нет. Видео: NVDEC → батч → NVENC, аудио copy; папки
 PNG декодируются/энкодируются через `image` (CPU) с раздельными метриками.
+Постоянная сессия пересоздаётся при смене модели, провайдера или каталога кэша
+TensorRT (`upscale: reloading session (was …)`).
 При OOM/ошибке CUDA задание падает (`cuda-unavailable`), CPU-фолбэка нет.
 Экспорт модели — `scripts/export_span2x_onnx.py` (SPAN ch48/ch52, dynamic axes,
 opset 18, fp16).

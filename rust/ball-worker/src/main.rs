@@ -9,6 +9,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -200,7 +201,58 @@ fn drain_stderr(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle
 
 // ------------------------------------------------------------------ модель
 
+/// ONNX Runtime Environment создаётся один раз на процесс: повторный
+/// `ort::init()` при перезагрузке модели возвращает ошибку `init onnxruntime`.
+fn ort_env() -> Result<&'static ort::environment::Environment> {
+    static ENV: OnceLock<ort::environment::Environment> = OnceLock::new();
+    if let Some(env) = ENV.get() {
+        return Ok(env);
+    }
+    let env = ort::init().build().context("init onnxruntime")?;
+    let _ = ENV.set(env);
+    Ok(ENV.get().expect("ort env"))
+}
+
+/// Параметры, от которых зависит загруженная ONNX-сессия.
+///
+/// Постоянный воркер держит сессию между заданиями, поэтому смена любого из
+/// этих полей обязана её пересоздать: иначе второй job молча работает на
+/// модели от первого (так и получилось с BlurBall вместо TrackNetV3).
+#[derive(Clone, Debug, PartialEq)]
+struct ModelSignature {
+    model: String,
+    frames: usize,
+    bg_mode: String,
+    width: u32,
+    height: u32,
+    device: String,
+    normalization: Option<([f32; 3], [f32; 3])>,
+}
+
+impl ModelSignature {
+    fn of(config: &Config) -> Self {
+        Self {
+            model: config.model.clone(),
+            frames: config.frames(),
+            bg_mode: config.bg_mode().to_string(),
+            width: config.input_width(),
+            height: config.input_height(),
+            device: config.device.clone().unwrap_or_else(|| "auto".to_string()),
+            normalization: config.normalization(),
+        }
+    }
+}
+
+/// Имя файла для короткого лога о перезагрузке.
+fn short_name(path: &str) -> &str {
+    Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(path)
+}
+
 struct Model {
+    signature: ModelSignature,
     session: Session,
     frames: usize,
     channels: usize,
@@ -221,7 +273,7 @@ impl Model {
         }
         let width = config.input_width();
         let height = config.input_height();
-        let env = ort::init().build().context("init onnxruntime")?;
+        let env = ort_env()?;
         let wanted = config.device.as_deref().unwrap_or("auto");
         let mut frames = config.frames();
         let mut last_error: Option<String> = None;
@@ -234,7 +286,7 @@ impl Model {
         };
         for use_cuda in attempts {
             let session = if use_cuda {
-                match Session::builder(&env).and_then(|builder| {
+                match Session::builder(env).and_then(|builder| {
                     let mut builder = builder
                         .with_execution_providers([ort::ep::CUDA::default().with_device_id(0).build()])
                         .map_err(|error| ort::Error::new(error.to_string()))?;
@@ -247,7 +299,7 @@ impl Model {
                     }
                 }
             } else {
-                match Session::builder(&env).and_then(|mut builder| builder.commit_from_file(path)) {
+                match Session::builder(env).and_then(|mut builder| builder.commit_from_file(path)) {
                     Ok(session) => session,
                     Err(error) => {
                         last_error = Some(error.to_string());
@@ -302,6 +354,7 @@ impl Model {
             emit_log("once", "ball: input normalization = ImageNet mean/std");
         }
         Ok(Self {
+            signature: ModelSignature::of(config),
             session,
             frames,
             channels,
@@ -750,7 +803,24 @@ fn run_job(job: &str, config: &Config, model: &mut Option<Model>) -> Result<Valu
     if !source.is_file() {
         bail!("input-missing: {}", source.display());
     }
-    if model.is_none() {
+    // Сессия переиспользуется, только если совпадает подпись загрузки: путь
+    // модели, раскладка входа, число кадров, размер, устройство и нормализация.
+    // Иначе постоянный процесс работал бы на модели от предыдущего задания.
+    let wanted = ModelSignature::of(config);
+    let reload = match model.as_ref() {
+        Some(loaded) => loaded.signature != wanted,
+        None => true,
+    };
+    if reload {
+        if let Some(previous) = model.as_ref() {
+            emit_log(
+                job,
+                format!(
+                    "ball: reloading model (was {})",
+                    short_name(&previous.signature.model)
+                ),
+            );
+        }
         let loaded = Model::load(config)?;
         emit_log(
             job,
@@ -762,11 +832,18 @@ fn run_job(job: &str, config: &Config, model: &mut Option<Model>) -> Result<Valu
         *model = Some(loaded);
     }
     let engine = model.as_mut().expect("model");
-    if config.images.is_some() || is_image_path(source) {
-        return run_image(job, config, engine, &started);
+    let is_image = config.images.is_some() || is_image_path(source);
+    // Модели с фоном (concat и т.п.) — только для статичных кадров: это ограничение
+    // самого воркера, а не конкретного файла модели.
+    if !is_image && engine.channels != engine.frames * 3 {
+        return Err(anyhow!(
+            "model-layout-unsupported: bg_mode={} channels={} is supported for images only",
+            engine.bg_mode,
+            engine.channels
+        ));
     }
-    if engine.channels != engine.frames * 3 {
-        bail!("model-layout-unsupported: bg_mode={} is supported for images only", engine.bg_mode);
+    if is_image {
+        return run_image(job, config, engine, &started);
     }
     let (width, height, source_fps, source_duration, has_audio) = probe_video(config, source)?;
     let fps = config.fps.unwrap_or(source_fps).clamp(1.0, 60.0);
@@ -1291,17 +1368,74 @@ mod tests {
         assert_eq!(ass_time(0), "0:00:00.00");
         assert_eq!(ass_time(1234), "0:00:12.34");
         let points = vec![Point { frame: 0, time: 0.0, visible: true, x: 10.0, y: 20.0, conf: 1.0 }];
-        let config = Config {
-            images: None,
-            bg_mode: None,
-            source: "/tmp/x.mp4".into(), model: "/tmp/x.onnx".into(), output_dir: std::env::temp_dir().join("ball-test").to_string_lossy().into(),
-            fps: None, start_sec: None, duration_sec: None, threshold: None, annotate: None, max_gap_frames: None,
-            smooth: None, max_jump_px: None, predict_offset: None, output_index: None, sigmoid: None, normalize: None, mean: None, std: None, frames: None, input_width: None, input_height: None, device: None,
-            gpu_index: None, ffmpeg_path: None, ffprobe_path: None, overwrite: None,
-        };
+        let config = test_config("/tmp/x.onnx");
         let _ = fs::create_dir_all(&config.output_dir);
         let path = build_ass(&config, &points, 320, 180, 30.0).unwrap();
         let text = fs::read_to_string(path).unwrap();
         assert!(text.contains("Dialogue: 0,0:00:00.00,0:00:00.03,Dot,,0,0,0,,{\\pos(10.0,20.0)}●"));
+    }
+
+    /// Конфиг с минимально обязательными полями; остальные — по умолчанию.
+    fn test_config(model: &str) -> Config {
+        Config {
+            source: "/tmp/x.mp4".into(),
+            model: model.into(),
+            output_dir: std::env::temp_dir().join("ball-test").to_string_lossy().into(),
+            images: None,
+            bg_mode: None,
+            fps: None,
+            start_sec: None,
+            duration_sec: None,
+            threshold: None,
+            annotate: None,
+            max_gap_frames: None,
+            smooth: None,
+            max_jump_px: None,
+            predict_offset: None,
+            output_index: None,
+            sigmoid: None,
+            normalize: None,
+            mean: None,
+            std: None,
+            frames: None,
+            input_width: None,
+            input_height: None,
+            device: None,
+            gpu_index: None,
+            ffmpeg_path: None,
+            ffprobe_path: None,
+            overwrite: None,
+        }
+    }
+
+    #[test]
+    fn model_signature_matches_same_inputs() {
+        // Одинаковые параметры — сессию пересоздавать не нужно.
+        let first = ModelSignature::of(&test_config("/models/blurball_tt.onnx"));
+        let second = ModelSignature::of(&test_config("/models/blurball_tt.onnx"));
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn model_signature_detects_changed_inputs() {
+        let base = ModelSignature::of(&test_config("/models/blurball_tt.onnx"));
+        // Другая модель: именно этот случай раньше игнорировался.
+        assert_ne!(base, ModelSignature::of(&test_config("/models/tracknetv3.onnx")));
+
+        let mut frames = test_config("/models/blurball_tt.onnx");
+        frames.frames = Some(5);
+        assert_ne!(base, ModelSignature::of(&frames));
+
+        let mut layout = test_config("/models/blurball_tt.onnx");
+        layout.bg_mode = Some("concat".into());
+        assert_ne!(base, ModelSignature::of(&layout));
+
+        let mut normalization = test_config("/models/blurball_tt.onnx");
+        normalization.normalize = Some("none".into());
+        assert_ne!(base, ModelSignature::of(&normalization));
+
+        let mut device = test_config("/models/blurball_tt.onnx");
+        device.device = Some("cpu".into());
+        assert_ne!(base, ModelSignature::of(&device));
     }
 }

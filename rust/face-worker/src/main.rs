@@ -21,6 +21,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 /// Эталонные точки 112×112 для выравнивания (как в python/face_worker.py).
@@ -160,7 +161,7 @@ fn serve() -> Result<()> {
             CommandMsg::Ping => emit(json!({"type": "pong"})),
             CommandMsg::Shutdown => break,
             CommandMsg::Run { id, config } => {
-                let result = ensure_engine(&mut engine, &config).and_then(|engine| run_job(engine, &id, &config));
+                let result = ensure_engine(&mut engine, &id, &config).and_then(|engine| run_job(engine, &id, &config));
                 if let Err(error) = result {
                     emit(json!({
                         "type": "error",
@@ -175,8 +176,42 @@ fn serve() -> Result<()> {
     Ok(())
 }
 
-fn ensure_engine<'a>(slot: &'a mut Option<Engine>, config: &Config) -> Result<&'a mut Engine> {
-    if slot.is_none() {
+/// Параметры, зафиксированные в загруженном движке лиц: каталог моделей,
+/// размер входа и батч/потоки. Постоянный воркер держит движок между
+/// заданиями, поэтому смена любого поля обязана его пересоздать.
+#[derive(Clone, Debug, PartialEq)]
+struct EngineKey {
+    model_dir: String,
+    input_size: u32,
+    batch: usize,
+    threads: usize,
+}
+
+impl EngineKey {
+    fn of(config: &Config) -> Self {
+        Self {
+            model_dir: config.model_dir.clone(),
+            input_size: config.input_size.unwrap_or(640),
+            batch: config.batch.clamp(1, 32),
+            threads: config.threads.clamp(1, 8),
+        }
+    }
+}
+
+fn ensure_engine<'a>(slot: &'a mut Option<Engine>, id: &str, config: &Config) -> Result<&'a mut Engine> {
+    let wanted = EngineKey::of(config);
+    let reload = match slot.as_ref() {
+        Some(engine) => engine.key != wanted,
+        None => true,
+    };
+    if reload {
+        if let Some(previous) = slot.as_ref() {
+            emit(json!({
+                "type": "log",
+                "id": id,
+                "message": format!("face: reloading engine (was {})", previous.key.model_dir),
+            }));
+        }
         let engine = Engine::load(config)?;
         emit(json!({
             "type": "ready",
@@ -195,7 +230,20 @@ fn run_once(config: Config) -> Result<()> {
 
 // ------------------------------------------------------------------- движок
 
+/// ONNX Runtime Environment создаётся один раз на процесс: повторный
+/// `ort::init()` при перезагрузке движка возвращает ошибку `init onnxruntime`.
+fn ort_env() -> Result<&'static ort::environment::Environment> {
+    static ENV: OnceLock<ort::environment::Environment> = OnceLock::new();
+    if let Some(env) = ENV.get() {
+        return Ok(env);
+    }
+    let env = ort::init().build().context("init onnxruntime")?;
+    let _ = ENV.set(env);
+    Ok(ENV.get().expect("ort env"))
+}
+
 struct Engine {
+    key: EngineKey,
     yunet: Session,
     sface: Session,
     input_w: u32,
@@ -212,7 +260,7 @@ struct Engine {
 
 impl Engine {
     fn load(config: &Config) -> Result<Self> {
-        let env = ort::init().build().context("init onnxruntime")?;
+        let env = ort_env()?;
         let yunet_path = Path::new(&config.model_dir).join("yunet.onnx");
         let sface_path = Path::new(&config.model_dir).join("sface.onnx");
         for path in [&yunet_path, &sface_path] {
@@ -225,7 +273,7 @@ impl Engine {
         let cuda_compiled = <ort::ep::CUDA as ort::ep::ExecutionProvider>::is_available().unwrap_or(false);
         let use_cuda = cuda_compiled;
         let build = |path: &PathBuf| -> Result<Session> {
-            let builder = Session::builder(&env)?;
+            let builder = Session::builder(env)?;
             let mut builder = if use_cuda {
                 builder
                     .with_execution_providers([ort::ep::CUDA::default().with_device_id(0).build()])
@@ -262,6 +310,7 @@ impl Engine {
         ))?;
         let _ = sface.run(ort::inputs![tensor])?;
         Ok(Self {
+            key: EngineKey::of(config),
             yunet,
             sface,
             input_w,
@@ -756,7 +805,8 @@ fn local_blob_row(
 
 /// Билинейный resize по предвычисленным весам (целочисленная арифметика).
 fn resize_blob(resizer: &Resizer, frame: &Frame) -> Vec<u8> {
-    let (width, height) = (frame.width as usize, frame.height as usize);
+    // Высота не нужна: индексы строк уже предвычислены в resizer.
+    let width = frame.width as usize;
     let target_w = resizer.width;
     let target_h = resizer.height;
     let mut out = vec![0u8; target_w * target_h * 3];
@@ -1011,5 +1061,28 @@ mod tests {
     fn cosine_is_one_for_equal_vectors() {
         let value = cosine(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]);
         assert!((value - 1.0).abs() < 1e-6);
+    }
+
+    /// Конфиг с обязательными полями; остальное — значения по умолчанию.
+    fn test_config(model_dir: &str) -> Config {
+        serde_json::from_value(json!({
+            "modelDir": model_dir,
+            "outputDir": "/tmp/face-test",
+        }))
+        .expect("config")
+    }
+
+    #[test]
+    fn engine_key_tracks_model_dir_and_batch() {
+        let base = EngineKey::of(&test_config("/models/a"));
+        assert_eq!(base, EngineKey::of(&test_config("/models/a")));
+        // Другой каталог моделей — движок пересоздаём.
+        assert_ne!(base, EngineKey::of(&test_config("/models/b")));
+        let mut bigger = test_config("/models/a");
+        bigger.batch = 16;
+        assert_ne!(base, EngineKey::of(&bigger));
+        let mut sized = test_config("/models/a");
+        sized.input_size = Some(320);
+        assert_ne!(base, EngineKey::of(&sized));
     }
 }
