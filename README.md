@@ -23,6 +23,53 @@ YOLO11, трекинг мяча и GPU-скрипты. У каждой зада�
 
 Текущая версия — **1.7.4**. Подробности — в [docs/DETAIL.md](docs/DETAIL.md).
 
+## Установка
+
+Полная подготовка одной командой — без `sudo`/`apt` и без ручной правки профиля DSH:
+
+```bash
+./install.sh                 # сборка + GPU-venv + базовые веса + настройки
+./install.sh --models all    # плюс официальные веса TrackNetV3 (Google Drive)
+```
+
+Что делает `install.sh`:
+
+1. проверяет `node >= 20`, `npm`, `cargo`, `git`, `python3`, `ffmpeg`/`ffprobe`;
+   отсутствие GPU — предупреждение, а не отказ;
+2. ставит зависимости и собирает: `npm install --cache ./.npm-cache`,
+   `npm run build`, `npm run build:rust` (воркеры в `bin/`);
+3. создаёт `$DSH_HOME/gputool/venv` (через `uv`, если он есть, иначе
+   `python3 -m venv`) и ставит torch cu126, onnxruntime-gpu, ultralytics,
+   opencv-python-headless, numpy, lap;
+4. готовит веса в `$DSH_HOME/gputool/models`: **BlurBall**, **WASB-SBDT** и
+   **SPAN x2** (ch48 + ch52); с `--models all` — ещё **TrackNetV3**
+   (`TrackNetV3_ckpts.zip` с Google Drive через `gdown`). Клоны репозиториев и
+   архивы складываются в `$DSH_HOME/gputool/cache`; уже существующие файлы не
+   перекачиваются;
+5. пишет `manifest.json` (sha256 всех моделей) и обновляет `settings.json`:
+   `pythonPath`, `ballModelPath`, `upscaleModelPath`, GPU-пути
+   `ffmpegGpuPath`/`ffprobeGpuPath` (если бинарь с NVENC найден);
+6. напоминает, что плагин ставится через менеджер плагинов DSH
+   (`install_bundle` с путём каталога): профиль вручную не правится.
+
+| Флаг | Действие |
+| --- | --- |
+| `--models core\|all\|none` | какие веса готовить (по умолчанию `core`) |
+| `--skip-models` | не трогать веса |
+| `--force-models` | пересобрать/перекачать веса заново |
+| `--skip-build` | не собирать Node/Rust |
+| `--skip-runtime` | не создавать GPU-venv |
+| `--verify-models` | сверить модели с `manifest.json` |
+| `--no-manifest` | не перезаписывать `manifest.json` |
+| `--check` | проверить окружение и показать план |
+| `--dry-run` | напечатать команды без выполнения |
+
+После установки: установите каталог через менеджер плагинов DSH,
+перезапустите DSH и откройте панель GPU tool (Настройки → Проверка).
+`venv/`, `cache/` и `models/` в git не входят.
+
+### Ручная сборка
+
 ```bash
 npm install --cache ./.npm-cache
 npm run build        # TypeScript + клиентский бандл
@@ -30,8 +77,6 @@ npm run build:rust   # воркеры face / upscale / ball (cargo)
 npm test             # Node-тесты
 npm run test:rust    # Rust-тесты воркеров
 ```
-
-Затем установите каталог через менеджер плагинов DSH.
 
 ---
 

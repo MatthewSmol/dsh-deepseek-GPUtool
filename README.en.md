@@ -23,6 +23,53 @@ it took.
 
 Current version: **1.7.4**. Details: [docs/DETAIL.md](docs/DETAIL.md).
 
+## Installation
+
+Full preparation in one command — no `sudo`/`apt`, no manual DSH profile edits:
+
+```bash
+./install.sh                 # build + GPU venv + core weights + settings
+./install.sh --models all    # plus the official TrackNetV3 weights (Google Drive)
+```
+
+What `install.sh` does:
+
+1. checks `node >= 20`, `npm`, `cargo`, `git`, `python3`, `ffmpeg`/`ffprobe`;
+   a missing GPU is a warning, not a failure;
+2. installs dependencies and builds: `npm install --cache ./.npm-cache`,
+   `npm run build`, `npm run build:rust` (workers in `bin/`);
+3. creates `$DSH_HOME/gputool/venv` (via `uv` when available, otherwise
+   `python3 -m venv`) and installs torch cu126, onnxruntime-gpu, ultralytics,
+   opencv-python-headless, numpy, lap;
+4. prepares weights in `$DSH_HOME/gputool/models`: **BlurBall**, **WASB-SBDT**
+   and **SPAN x2** (ch48 + ch52); `--models all` also adds **TrackNetV3**
+   (`TrackNetV3_ckpts.zip` from Google Drive via `gdown`). Repository clones and
+   archives go to `$DSH_HOME/gputool/cache`; existing files are not downloaded
+   again;
+5. writes `manifest.json` (sha256 of every model) and updates `settings.json`:
+   `pythonPath`, `ballModelPath`, `upscaleModelPath`, GPU
+   `ffmpegGpuPath`/`ffprobeGpuPath` (when an NVENC build is found);
+6. reminds that the plugin itself is installed through the DSH plugin manager
+   (`install_bundle` with the directory path): the profile is not edited by hand.
+
+| Flag | Effect |
+| --- | --- |
+| `--models core\|all\|none` | which weights to prepare (default `core`) |
+| `--skip-models` | leave the weights alone |
+| `--force-models` | rebuild/re-download the weights |
+| `--skip-build` | skip Node/Rust builds |
+| `--skip-runtime` | skip GPU venv creation |
+| `--verify-models` | verify models against `manifest.json` |
+| `--no-manifest` | do not rewrite `manifest.json` |
+| `--check` | check the environment and print the plan |
+| `--dry-run` | print commands without running them |
+
+After installation: install the directory with the DSH plugin manager, restart
+DSH and open the GPU tool panel (Settings → Check). `venv/`, `cache/` and
+`models/` are not tracked by git.
+
+### Manual build
+
 ```bash
 npm install --cache ./.npm-cache
 npm run build        # TypeScript + client bundle
@@ -30,8 +77,6 @@ npm run build:rust   # face / upscale / ball workers (cargo)
 npm test             # Node tests
 npm run test:rust    # worker tests
 ```
-
-Then install the directory with the DSH plugin manager.
 
 ---
 
