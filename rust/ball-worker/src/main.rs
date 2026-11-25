@@ -279,6 +279,143 @@ struct Model {
     std: Option<[f32; 3]>,
 }
 
+/// Что ONNX-модель ожидает на входе/выходе.
+struct SessionInfo {
+    channels: Option<usize>,
+    seq_len: Option<usize>,
+    width: Option<u32>,
+    height: Option<u32>,
+    dtype: Option<String>,
+    input: Option<Vec<i64>>,
+    output: Option<Vec<i64>>,
+}
+
+impl SessionInfo {
+    fn describe(&self) -> String {
+        format!(
+            "input {} {}, output {}",
+            shape_text(&self.input),
+            self.dtype.clone().unwrap_or_else(|| "unknown dtype".to_string()),
+            shape_text(&self.output)
+        )
+    }
+}
+
+fn shape_text(shape: &Option<Vec<i64>>) -> String {
+    match shape {
+        Some(dims) => format!("{dims:?}"),
+        None => "unknown".to_string(),
+    }
+}
+
+fn outlet_shape(outlet: &ort::value::Outlet) -> Option<Vec<i64>> {
+    match outlet.dtype() {
+        ort::value::ValueType::Tensor { shape, .. } => Some(shape.to_vec()),
+        _ => None,
+    }
+}
+
+fn session_info(session: &Session) -> SessionInfo {
+    let input = session.inputs().first().and_then(outlet_shape);
+    let output = session.outputs().first().and_then(outlet_shape);
+    let dtype = session.inputs().first().and_then(|outlet| match outlet.dtype() {
+        ort::value::ValueType::Tensor { ty, .. } => Some(format!("{ty:?}")),
+        _ => None,
+    });
+    let positive = |shape: &Option<Vec<i64>>, index: usize| -> Option<i64> {
+        shape.as_ref().and_then(|dims| dims.get(index).copied()).filter(|value| *value > 0)
+    };
+    SessionInfo {
+        channels: positive(&input, 1).map(|value| value as usize),
+        seq_len: positive(&output, 1).map(|value| value as usize),
+        height: positive(&input, 2).map(|value| value as u32),
+        width: positive(&input, 3).map(|value| value as u32),
+        dtype,
+        input,
+        output,
+    }
+}
+
+/// Раскладка входа, выведенная из формы ONNX: (frames, channels, bg_mode).
+fn resolve_layout(channels: Option<usize>, seq_len: Option<usize>, preferred: &str) -> Option<(usize, usize, String)> {
+    let channels = channels?;
+    let frames = seq_len?;
+    if !(1..=8).contains(&frames) {
+        return None;
+    }
+    let mut options: Vec<&str> = Vec::new();
+    if channels == frames * 3 {
+        options.push("");
+    }
+    if channels == (frames + 1) * 3 {
+        options.push("concat");
+    }
+    if channels == frames {
+        options.push("subtract");
+    }
+    if channels == frames * 4 {
+        options.push("subtract_concat");
+    }
+    if options.is_empty() {
+        return None;
+    }
+    let mode = if !preferred.is_empty() && options.iter().any(|mode| *mode == preferred) {
+        preferred
+    } else if options.contains(&"concat") {
+        "concat"
+    } else {
+        options[0]
+    };
+    Some((frames, channels, mode.to_string()))
+}
+
+fn push_unique(list: &mut Vec<(usize, usize, String)>, item: (usize, usize, String)) {
+    if !list.contains(&item) {
+        list.push(item);
+    }
+}
+
+fn layout_name(mode: &str) -> &str {
+    if mode.is_empty() { "frames" } else { mode }
+}
+
+/// Кандидаты раскладки: сначала запрошенные, затем выведенные из формы, затем
+/// перебор frames=1..=8 (8 и 3 первыми — самые частые у TrackNet).
+fn layout_candidates(requested: (usize, usize, String), detected: Option<(usize, usize, String)>) -> Vec<(usize, usize, String)> {
+    let mut list: Vec<(usize, usize, String)> = Vec::new();
+    push_unique(&mut list, requested.clone());
+    if let Some(detected) = detected {
+        push_unique(&mut list, detected);
+    }
+    let preferred = requested.2.as_str();
+    let mut frames_order: Vec<usize> = vec![8, 3];
+    for frames in 1..=8 {
+        if !frames_order.contains(&frames) {
+            frames_order.push(frames);
+        }
+    }
+    for frames in frames_order {
+        let variants = [
+            ("", frames * 3),
+            ("concat", (frames + 1) * 3),
+            ("subtract", frames),
+            ("subtract_concat", frames * 4),
+        ];
+        // Сначала вариант с запрошенной раскладкой, затем остальные как запасные.
+        for (mode, channels) in variants {
+            if mode == preferred {
+                push_unique(&mut list, (frames, channels, mode.to_string()));
+            }
+        }
+        for (mode, channels) in variants {
+            if mode != preferred {
+                push_unique(&mut list, (frames, channels, mode.to_string()));
+            }
+        }
+    }
+    list
+}
+
 impl Model {
     /// Нормализация входа, если заданы и mean, и std.
     fn normalization(&self) -> Option<([f32; 3], [f32; 3])> {
@@ -293,13 +430,21 @@ impl Model {
         if !path.is_file() {
             bail!("model not found: {}", path.display());
         }
-        let width = config.input_width();
-        let height = config.input_height();
+        let default_width = config.input_width();
+        let default_height = config.input_height();
         let env = ort_env()?;
         let wanted = config.device.as_deref().unwrap_or("auto");
-        let mut frames = config.frames();
+        let requested_frames = config.frames();
+        let requested = (
+            requested_frames,
+            config.channels(requested_frames),
+            config.bg_mode().to_string(),
+        );
         let mut last_error: Option<String> = None;
-        let mut model: Option<(Session, String, Vec<String>, usize, String)> = None;
+        let mut tried: Vec<String> = Vec::new();
+        let mut last_shapes: Option<String> = None;
+        let mut model: Option<(Session, String, Vec<String>, usize, usize, String)> = None;
+        let mut chosen_dims = (default_width, default_height);
 
         let attempts: Vec<bool> = match wanted {
             "cpu" => vec![false],
@@ -329,45 +474,73 @@ impl Model {
                     }
                 }
             };
-            // Подбираем раскладку: concat/subtract или простые frames*3.
             let mut session = session;
-            let mut chosen: Option<(usize, usize, String)> = None;
-            let config_channels = config.channels(frames);
-            let mut candidates: Vec<(usize, usize, String)> = vec![
-                (frames, config_channels, config.bg_mode().to_string()),
-                (frames, frames * 3, String::new()),
-            ];
-            for candidate_frames in [1usize, 3, frames] {
-                candidates.push((candidate_frames, candidate_frames * 3, String::new()));
-                candidates.push((candidate_frames, (candidate_frames + 1) * 3, "concat".to_string()));
+            let info = session_info(&session);
+            last_shapes = Some(info.describe());
+            // Размер входа берём из модели, если пользователь не задал его явно.
+            let width = config.input_width.or(info.width).unwrap_or(default_width);
+            let height = config.input_height.or(info.height).unwrap_or(default_height);
+            if let Some(seq_len) = info.seq_len {
+                if seq_len > 8 {
+                    last_error = Some(format!("seq_len={seq_len} is greater than the supported 8"));
+                    tried.push(format!("(seq_len={seq_len}) skipped: more than 8 frames"));
+                    continue;
+                }
             }
+            let detected = resolve_layout(info.channels, info.seq_len, config.bg_mode());
+            let candidates = layout_candidates(requested.clone(), detected);
+            let mut chosen: Option<(usize, usize, String)> = None;
             for (candidate, channels, mode) in candidates {
-                let probe = vec![0f32; channels * height as usize * width as usize];
-                if infer_session(&mut session, channels, width, height, &probe).is_ok() {
-                    chosen = Some((candidate, channels, mode));
-                    break;
+                let elements = channels.saturating_mul(height as usize).saturating_mul(width as usize);
+                if elements == 0 || elements > 64_000_000 {
+                    tried.push(format!("({candidate},{channels},{mode:?}) skipped: tensor is too large"));
+                    continue;
+                }
+                let probe = vec![0f32; elements];
+                match infer_session(&mut session, channels, width, height, &probe) {
+                    Ok(_) => {
+                        chosen = Some((candidate, channels, mode));
+                        break;
+                    }
+                    Err(error) => {
+                        last_error = Some(error.to_string());
+                        tried.push(format!("({candidate},{channels},{mode:?})"));
+                    }
                 }
             }
             match chosen {
-                Some((candidate, channels, mode)) => {
-                    frames = candidate;
+                Some((frames, channels, bg_mode)) => {
+                    if frames != requested_frames || bg_mode != requested.2 {
+                        emit_log(
+                            "once",
+                            format!(
+                                "ball: layout from the model: frames={frames} channels={channels} layout={}",
+                                layout_name(&bg_mode)
+                            ),
+                        );
+                    }
                     let device = if use_cuda { "cuda:0".to_string() } else { "cpu".to_string() };
                     let providers = if use_cuda {
                         vec!["CUDAExecutionProvider".to_string(), "CPUExecutionProvider".to_string()]
                     } else {
                         vec!["CPUExecutionProvider".to_string()]
                     };
-                    model = Some((session, device, providers, channels, mode));
+                    model = Some((session, device, providers, frames, channels, bg_mode));
+                    chosen_dims = (width, height);
                     break;
                 }
-                None => {
-                    last_error = Some(format!("model did not accept {}x{} with 3 or 9 channels", width, height));
-                }
+                None => continue,
             }
         }
 
-        let (session, device, providers, channels, bg_mode) =
-            model.ok_or_else(|| anyhow!("model-layout-unsupported: {}", last_error.unwrap_or_default()))?;
+        let (session, device, providers, frames, channels, bg_mode) = model.ok_or_else(|| {
+            anyhow!(
+                "model-layout-unsupported: {}; tried: [{}]; last ORT error: {}",
+                last_shapes.unwrap_or_else(|| "input shape unavailable".to_string()),
+                tried.join(", "),
+                last_error.unwrap_or_else(|| "unknown".to_string())
+            )
+        })?;
         if device == "cpu" && wanted != "cpu" {
             emit_log("once", "CUDA is unavailable; ball inference runs on CPU");
         }
@@ -381,8 +554,8 @@ impl Model {
             frames,
             channels,
             bg_mode,
-            width,
-            height,
+            width: chosen_dims.0,
+            height: chosen_dims.1,
             device,
             providers,
             mean: normalization.map(|value| value.0),
@@ -1005,6 +1178,7 @@ fn run_job(job: &str, config: &Config, model: &mut Option<Model>) -> Result<Valu
     }
     let mut points: Vec<Point> = Vec::with_capacity(total_frames);
     let mut frame_index = 0usize;
+    let mut heatmap_count = 0usize;
     let mut sigmoid_reported = false;
     let mut last_emit = Instant::now();
 
@@ -1041,6 +1215,7 @@ fn run_job(job: &str, config: &Config, model: &mut Option<Model>) -> Result<Valu
                 );
             }
             let heatmaps = output.len() / plane;
+            heatmap_count = heatmaps;
             let channel = match config.output_index() {
                 Some(index) if index < heatmaps => index,
                 Some(index) => bail!(
@@ -1127,6 +1302,7 @@ fn run_job(job: &str, config: &Config, model: &mut Option<Model>) -> Result<Valu
         "providers": engine.providers,
         "frames": total_frames,
         "detected": detected,
+        "heatmaps": heatmap_count,
         "fps": fps,
         "hasAudio": has_audio,
         "jsonl": jsonl_path.to_string_lossy(),
@@ -1258,6 +1434,7 @@ fn run_image(job: &str, config: &Config, engine: &mut Model, started: &Instant) 
         "device": engine.device,
         "providers": engine.providers,
         "images": paths.len(),
+        "heatmaps": heatmaps,
         "width": src_w,
         "height": src_h,
         "x": x,
@@ -1505,6 +1682,39 @@ mod tests {
             background: None,
             background_samples: None,
         }
+    }
+
+    #[test]
+    fn resolve_layout_matches_tracknet_families() {
+        assert_eq!(resolve_layout(Some(27), Some(8), ""), Some((8, 27, "concat".into())));
+        assert_eq!(resolve_layout(Some(9), Some(3), ""), Some((3, 9, String::new())));
+        assert_eq!(resolve_layout(Some(24), Some(8), ""), Some((8, 24, String::new())));
+        assert_eq!(resolve_layout(Some(32), Some(8), ""), Some((8, 32, "subtract_concat".into())));
+        assert_eq!(resolve_layout(Some(8), Some(8), ""), Some((8, 8, "subtract".into())));
+        // 12 каналов при 3 выходах: concat(3) или subtract_concat(3).
+        assert_eq!(
+            resolve_layout(Some(12), Some(3), "subtract_concat"),
+            Some((3, 12, "subtract_concat".into()))
+        );
+        assert_eq!(resolve_layout(Some(12), Some(3), ""), Some((3, 12, "concat".into())));
+        assert_eq!(resolve_layout(None, Some(8), ""), None);
+        assert_eq!(resolve_layout(Some(27), Some(9), ""), None);
+        assert_eq!(resolve_layout(Some(30), Some(8), ""), None);
+    }
+
+    #[test]
+    fn layout_candidates_cover_tracknetv3_without_duplicates() {
+        let detected = Some((8usize, 27usize, "concat".to_string()));
+        let list = layout_candidates((3, 12, "concat".into()), detected);
+        assert!(list
+            .iter()
+            .any(|(frames, channels, mode)| *frames == 8 && *channels == 27 && mode == "concat"));
+        // Явно запрошенная пара идёт первой, дублей нет.
+        assert_eq!(list.first().map(|item| item.0), Some(3));
+        let mut unique = list.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), list.len());
     }
 
     #[test]

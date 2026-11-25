@@ -60,7 +60,7 @@ import {
 } from './upscale-rust.js'
 import { run, stream } from './proc.js'
 
-export const VERSION = '1.7.3'
+export const VERSION = '1.7.4'
 
 /** Диагностика ffmpeg для /api/state: что реально доступно в бинаре. */
 export function buildFfmpegDiagnostics(caps: FfmpegCaps, gpu: boolean): FfmpegDiagnostics {

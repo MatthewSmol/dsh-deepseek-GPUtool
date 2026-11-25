@@ -141,6 +141,23 @@ call history.
 - Tests: +5 (response parsing, multipart against a local server, the key never
   echoed, file limits) for 17 total.
 
+### 1.7.4 — 2026-11-25
+
+- **Automatic ONNX layout detection**: `frames`/`bgMode` are no longer required.
+  The worker reads the input/output shapes (`[1,C,288,512]`, `[1,L,…]`) and
+  derives `frames=L` and the layout: `L*3` — plain frames, `(L+1)*3` — concat,
+  `L` — subtract, `L*4` — subtract_concat. Ambiguity is resolved by the
+  requested `bgMode`, then by `concat`. `tracknetv3_badminton.onnx` (27
+  channels, 8 heatmaps) now loads without `frames` — that was exactly why 1.7.3
+  failed (`model did not accept 512x288 with 3 or 9 channels`).
+- **Diagnostics**: a failure now reports the input/output shape and dtype, the
+  list of tried `(frames, channels, layout)` candidates and the real ORT error
+  (e.g. `Got: 28 Expected: 27`) instead of "3 or 9 channels".
+- **Heatmap selection**: the last heatmap of the window (newest frame) is used
+  by default; `outputIndex` overrides it, and `heatmaps` is returned in the
+  result.
+- Tests: Rust ball 14, Node 62.
+
 ### 1.7.3 — 2026-11-25
 
 - **TrackNetV3 on video**: `bgMode=concat` now works for videos, not only still
